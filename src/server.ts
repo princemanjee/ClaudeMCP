@@ -49,7 +49,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<{
       res.status(400).json({ error: "No active SSE connection" });
       return;
     }
-    await transport.handlePostMessage(req, res);
+    await transport.handlePostMessage(req, res, req.body);
   });
 
   app.get("/health", (_req, res) => {
