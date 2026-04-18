@@ -10,7 +10,7 @@ const ConfigSchema = z.object({
   logFile: z.string().default("logs/activity.log"),
   sessionStoreFile: z.string().default("data/sessions.json"),
   claudeCommand: z
-    .union([z.string(), z.array(z.string()).nonempty()])
+    .union([z.string(), z.array(z.string()).min(1)])
     .default("claude"),
   ask: z
     .object({
@@ -42,8 +42,10 @@ function applyEnvOverrides(cfg: Config): Config {
     logFile: logEnv ?? cfg.logFile,
     sessionStoreFile: storeEnv ?? cfg.sessionStoreFile,
   };
-  if (portEnv && !Number.isFinite(next.port)) {
-    throw new Error(`CLAUDE_MCP_PORT must be a number, got: ${portEnv}`);
+  if (portEnv && (!Number.isInteger(next.port) || next.port <= 0)) {
+    throw new Error(
+      `CLAUDE_MCP_PORT must be a positive integer, got: ${portEnv}`,
+    );
   }
   return next;
 }
@@ -67,7 +69,7 @@ export function loadConfig(path: string): Config {
       .join("\n");
     throw new Error(`Invalid config at ${path}:\n${issues}`);
   }
-  const withEnv = applyEnvOverrides(parsed.data as Config);
+  const withEnv = applyEnvOverrides(parsed.data);
   Object.freeze(withEnv.ask);
   Object.freeze(withEnv.task);
   return Object.freeze(withEnv);

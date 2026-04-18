@@ -11,6 +11,7 @@ beforeEach(() => {
   delete process.env.CLAUDE_MCP_PORT;
   delete process.env.CLAUDE_MCP_HOST;
   delete process.env.CLAUDE_MCP_LOG_FILE;
+  delete process.env.CLAUDE_MCP_SESSION_STORE_FILE;
 });
 
 afterEach(() => {
@@ -18,6 +19,7 @@ afterEach(() => {
   delete process.env.CLAUDE_MCP_PORT;
   delete process.env.CLAUDE_MCP_HOST;
   delete process.env.CLAUDE_MCP_LOG_FILE;
+  delete process.env.CLAUDE_MCP_SESSION_STORE_FILE;
 });
 
 function write(name: string, content: unknown): string {
@@ -77,6 +79,14 @@ describe("loadConfig", () => {
     expect(cfg.port).toBe(5555);
     expect(cfg.host).toBe("0.0.0.0");
     expect(cfg.logFile).toBe("/var/log/x.log");
+  });
+
+  test("rejects non-numeric CLAUDE_MCP_PORT env var", () => {
+    process.env.CLAUDE_MCP_PORT = "abc";
+    const path = write("c.json", {
+      task: { defaultWorkDir: "/x" },
+    });
+    expect(() => loadConfig(path)).toThrow(/positive integer/);
   });
 
   test("rejects invalid types with a clear error", () => {
