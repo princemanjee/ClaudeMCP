@@ -44,8 +44,11 @@ export class Logger {
 
   private async ensureDir(): Promise<void> {
     if (this.dirEnsured) return;
-    await mkdir(dirname(this.logFile), { recursive: true });
+    // Set the flag before awaiting so concurrent callers short-circuit.
+    // mkdir({recursive}) is idempotent, so double-issuing is harmless
+    // but pointless.
     this.dirEnsured = true;
+    await mkdir(dirname(this.logFile), { recursive: true });
   }
 
   log(entry: LogEntry): Promise<void> {
@@ -64,6 +67,10 @@ export class Logger {
     return this.queue;
   }
 
+  /**
+   * Awaits any pending writes. Call this before process exit so queued
+   * entries aren't dropped.
+   */
   flush(): Promise<void> {
     return this.queue;
   }
