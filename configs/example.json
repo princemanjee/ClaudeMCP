@@ -1,0 +1,34 @@
+{
+  "_comments": {
+    "port": "HTTP port for the SSE server",
+    "host": "Bind address. Keep 127.0.0.1 unless you need LAN access",
+    "logFile": "JSON-lines activity log path",
+    "sessionStoreFile": "Where the file-backed session map is persisted",
+    "claudeCommand": "Command used to spawn Claude Code. Override for tests or non-standard installs",
+    "ask.timeoutMs": "Per-call timeout for claude_ask",
+    "ask.allowedTools": "Comma-separated CLI allowlist. Empty string disables all tools (recommended for ask)",
+    "task.defaultSessionMode": "stateless | session | auto-last. Used when caller omits sessionMode",
+    "task.defaultWorkDir": "Directory Claude runs in when caller omits workDir",
+    "task.timeoutMs": "Per-call timeout for claude_task",
+    "task.allowedTools": "Comma-separated CLI allowlist. Ignored when dangerouslySkipPermissions is true",
+    "task.dangerouslySkipPermissions": "If true, passes --dangerously-skip-permissions and omits --allowed-tools. MAX BLAST RADIUS",
+    "task.sessionTtlMs": "Sessions untouched longer than this are evicted by the background sweeper"
+  },
+  "port": 3000,
+  "host": "127.0.0.1",
+  "logFile": "logs/activity.log",
+  "sessionStoreFile": "data/sessions.json",
+  "claudeCommand": "claude",
+  "ask": {
+    "timeoutMs": 60000,
+    "allowedTools": ""
+  },
+  "task": {
+    "defaultSessionMode": "session",
+    "defaultWorkDir": "C:/Code/scratch",
+    "timeoutMs": 600000,
+    "allowedTools": "Read,Edit,Write,Bash,Glob,Grep",
+    "dangerouslySkipPermissions": true,
+    "sessionTtlMs": 86400000
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "port": 3000,
+  "host": "127.0.0.1",
+  "logFile": "logs/activity.log",
+  "sessionStoreFile": "data/sessions.json",
+  "claudeCommand": "claude",
+  "ask": {
+    "timeoutMs": 60000,
+    "allowedTools": ""
+  },
+  "task": {
+    "defaultSessionMode": "session",
+    "defaultWorkDir": "C:/Code/scratch",
+    "timeoutMs": 600000,
+    "allowedTools": "Read,Edit,Write,Bash,Glob,Grep",
+    "dangerouslySkipPermissions": true,
+    "sessionTtlMs": 86400000
+  }
+}

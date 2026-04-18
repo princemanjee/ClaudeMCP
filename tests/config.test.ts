@@ -1,0 +1,107 @@
+import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { loadConfig } from "../src/config.js";
+
+let tmpDir: string;
+
+beforeEach(() => {
+  tmpDir = mkdtempSync(join(tmpdir(), "claude-mcp-config-"));
+  delete process.env.CLAUDE_MCP_PORT;
+  delete process.env.CLAUDE_MCP_HOST;
+  delete process.env.CLAUDE_MCP_LOG_FILE;
+});
+
+afterEach(() => {
+  rmSync(tmpDir, { recursive: true, force: true });
+  delete process.env.CLAUDE_MCP_PORT;
+  delete process.env.CLAUDE_MCP_HOST;
+  delete process.env.CLAUDE_MCP_LOG_FILE;
+});
+
+function write(name: string, content: unknown): string {
+  const path = join(tmpDir, name);
+  writeFileSync(path, JSON.stringify(content), "utf8");
+  return path;
+}
+
+describe("loadConfig", () => {
+  test("parses a valid config and applies defaults for missing fields", () => {
+    const path = write("c.json", {
+      task: { defaultWorkDir: "C:/Code/scratch" },
+    });
+    const cfg = loadConfig(path);
+    expect(cfg.port).toBe(3000);
+    expect(cfg.host).toBe("127.0.0.1");
+    expect(cfg.logFile).toBe("logs/activity.log");
+    expect(cfg.sessionStoreFile).toBe("data/sessions.json");
+    expect(cfg.claudeCommand).toBe("claude");
+    expect(cfg.ask.timeoutMs).toBe(60000);
+    expect(cfg.ask.allowedTools).toBe("");
+    expect(cfg.task.defaultSessionMode).toBe("session");
+    expect(cfg.task.defaultWorkDir).toBe("C:/Code/scratch");
+    expect(cfg.task.timeoutMs).toBe(600000);
+    expect(cfg.task.allowedTools).toBe("Read,Edit,Write,Bash,Glob,Grep");
+    expect(cfg.task.dangerouslySkipPermissions).toBe(true);
+    expect(cfg.task.sessionTtlMs).toBe(86400000);
+  });
+
+  test("honors user-provided values over defaults", () => {
+    const path = write("c.json", {
+      port: 4000,
+      host: "0.0.0.0",
+      task: {
+        defaultWorkDir: "/tmp/work",
+        defaultSessionMode: "stateless",
+        dangerouslySkipPermissions: false,
+      },
+    });
+    const cfg = loadConfig(path);
+    expect(cfg.port).toBe(4000);
+    expect(cfg.host).toBe("0.0.0.0");
+    expect(cfg.task.defaultWorkDir).toBe("/tmp/work");
+    expect(cfg.task.defaultSessionMode).toBe("stateless");
+    expect(cfg.task.dangerouslySkipPermissions).toBe(false);
+  });
+
+  test("env vars override config values", () => {
+    process.env.CLAUDE_MCP_PORT = "5555";
+    process.env.CLAUDE_MCP_HOST = "0.0.0.0";
+    process.env.CLAUDE_MCP_LOG_FILE = "/var/log/x.log";
+    const path = write("c.json", {
+      port: 3000,
+      task: { defaultWorkDir: "C:/Code/scratch" },
+    });
+    const cfg = loadConfig(path);
+    expect(cfg.port).toBe(5555);
+    expect(cfg.host).toBe("0.0.0.0");
+    expect(cfg.logFile).toBe("/var/log/x.log");
+  });
+
+  test("rejects invalid types with a clear error", () => {
+    const path = write("c.json", { port: "not-a-number" });
+    expect(() => loadConfig(path)).toThrow(/port/);
+  });
+
+  test("rejects unknown sessionMode", () => {
+    const path = write("c.json", {
+      task: { defaultSessionMode: "wacky", defaultWorkDir: "/x" },
+    });
+    expect(() => loadConfig(path)).toThrow();
+  });
+
+  test("returned config is frozen", () => {
+    const path = write("c.json", {
+      task: { defaultWorkDir: "/x" },
+    });
+    const cfg = loadConfig(path);
+    expect(Object.isFrozen(cfg)).toBe(true);
+    expect(Object.isFrozen(cfg.ask)).toBe(true);
+    expect(Object.isFrozen(cfg.task)).toBe(true);
+  });
+
+  test("throws a clear error when file does not exist", () => {
+    expect(() => loadConfig(join(tmpDir, "nope.json"))).toThrow(/nope\.json/);
+  });
+});
