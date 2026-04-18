@@ -140,4 +140,48 @@ describe("SessionStore", () => {
     // b should complete before a even though a started first
     expect(events.indexOf("b-end")).toBeLessThan(events.indexOf("a-end"));
   });
+
+  test("concurrent create calls on the same id produce a consistent final state", async () => {
+    const s = new SessionStore(storeFile);
+    await s.load();
+    // Fire two creates on the same sessionId simultaneously. The last one
+    // to land wins, but both map state and disk state must agree on the
+    // same winning meta.
+    const [a, b] = await Promise.all([
+      s.create("dup", "/w-a"),
+      s.create("dup", "/w-b"),
+    ]);
+    const inMemory = s.get("dup")!;
+    const persisted = JSON.parse(readFileSync(storeFile, "utf8"))["dup"];
+    expect(inMemory.workDir).toBe(persisted.workDir);
+    // The winner's workDir is one of the two we submitted (we don't care which)
+    expect(["/w-a", "/w-b"]).toContain(inMemory.workDir);
+    expect([a.workDir, b.workDir]).toContain(inMemory.workDir);
+  });
+
+  test("load skips malformed entries without crashing", async () => {
+    writeFileSync(
+      storeFile,
+      JSON.stringify({
+        good: {
+          sessionId: "good",
+          workDir: "/w",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          lastUsedAt: "2026-01-01T00:00:00.000Z",
+          turnCount: 0,
+        },
+        bad1: null,
+        bad2: 42,
+        bad3: { sessionId: "oops" }, // missing other fields
+      }),
+      "utf8",
+    );
+    const s = new SessionStore(storeFile);
+    await s.load();
+    expect(s.size()).toBe(1);
+    expect(s.get("good")?.sessionId).toBe("good");
+    expect(s.get("bad1")).toBe(null);
+    expect(s.get("bad2")).toBe(null);
+    expect(s.get("bad3")).toBe(null);
+  });
 });

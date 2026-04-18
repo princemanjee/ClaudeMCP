@@ -2,6 +2,18 @@ import { readFile, writeFile, rename, mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { SessionMeta } from "./types.js";
 
+function isSessionMeta(value: unknown): value is SessionMeta {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.sessionId === "string" &&
+    typeof v.workDir === "string" &&
+    typeof v.createdAt === "string" &&
+    typeof v.lastUsedAt === "string" &&
+    typeof v.turnCount === "number"
+  );
+}
+
 export class SessionStore {
   private map: Map<string, SessionMeta> = new Map();
   private writeQueue: Promise<void> = Promise.resolve();
@@ -18,8 +30,19 @@ export class SessionStore {
     }
     try {
       const raw = await readFile(this.storeFile, "utf8");
-      const parsed = JSON.parse(raw) as Record<string, SessionMeta>;
-      this.map = new Map(Object.entries(parsed));
+      const parsed: unknown = JSON.parse(raw);
+      this.map = new Map();
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [key, value] of Object.entries(parsed)) {
+          if (isSessionMeta(value)) {
+            this.map.set(key, value);
+          } else {
+            console.warn(
+              `[sessionStore] skipping malformed entry for sessionId="${key}"`,
+            );
+          }
+        }
+      }
     } catch (err) {
       console.warn(
         `[sessionStore] ${this.storeFile} is corrupted, starting fresh:`,
@@ -54,34 +77,38 @@ export class SessionStore {
       lastUsedAt: now,
       turnCount: 0,
     };
-    this.map.set(sessionId, meta);
-    await this.persist();
+    await this.mutateAndPersist(() => {
+      this.map.set(sessionId, meta);
+    });
     return meta;
   }
 
   async update(sessionId: string): Promise<SessionMeta | null> {
-    const existing = this.map.get(sessionId);
-    if (!existing) return null;
-    const updated: SessionMeta = {
-      ...existing,
-      lastUsedAt: new Date().toISOString(),
-      turnCount: existing.turnCount + 1,
-    };
-    this.map.set(sessionId, updated);
-    await this.persist();
+    let updated: SessionMeta | null = null;
+    await this.mutateAndPersist(() => {
+      const existing = this.map.get(sessionId);
+      if (!existing) return;
+      updated = {
+        ...existing,
+        lastUsedAt: new Date().toISOString(),
+        turnCount: existing.turnCount + 1,
+      };
+      this.map.set(sessionId, updated);
+    });
     return updated;
   }
 
   async evictExpired(ttlMs: number): Promise<number> {
     const threshold = Date.now() - ttlMs;
     let removed = 0;
-    for (const [id, meta] of this.map) {
-      if (Date.parse(meta.lastUsedAt) < threshold) {
-        this.map.delete(id);
-        removed++;
+    await this.mutateAndPersist(() => {
+      for (const [id, meta] of this.map) {
+        if (Date.parse(meta.lastUsedAt) < threshold) {
+          this.map.delete(id);
+          removed++;
+        }
       }
-    }
-    if (removed > 0) await this.persist();
+    });
     return removed;
   }
 
@@ -102,8 +129,9 @@ export class SessionStore {
     return next;
   }
 
-  private persist(): Promise<void> {
+  private mutateAndPersist(mutate: () => void): Promise<void> {
     this.writeQueue = this.writeQueue.then(async () => {
+      mutate();
       await mkdir(dirname(this.storeFile), { recursive: true });
       const asObject: Record<string, SessionMeta> = {};
       for (const [k, v] of this.map) asObject[k] = v;
