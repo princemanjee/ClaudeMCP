@@ -8,6 +8,7 @@ import { Logger } from "./logger.js";
 import { SessionStore } from "./sessionStore.js";
 import { registerClaudeAsk } from "./tools/claudeAsk.js";
 import { registerClaudeTask } from "./tools/claudeTask.js";
+import { createOpenAIHandler } from "./openaiShim/handler.js";
 
 const TTL_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -36,6 +37,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<{
   registerClaudeAsk(mcp, config, logger);
   registerClaudeTask(mcp, config, logger, store);
 
+  const openaiHandler = config.openai.enabled
+    ? createOpenAIHandler(config, logger, store)
+    : null;
+
   const app = express();
   let transport: SSEServerTransport | null = null;
 
@@ -56,6 +61,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<{
     res.json({ ok: true, sessions: store.size() });
   });
 
+  if (openaiHandler) {
+    app.post(
+      "/v1/chat/completions",
+      express.json({ limit: "10mb" }),
+      (req, res) => {
+        openaiHandler(req, res).catch((err) => {
+          console.error("[openaiShim] unhandled error:", err);
+          if (!res.headersSent) {
+            res.status(500).json({
+              error: {
+                message: (err as Error).message ?? "internal error",
+                type: "api_error",
+              },
+            });
+          }
+        });
+      },
+    );
+  }
+
   const sweepTimer = setInterval(() => {
     store
       .evictExpired(config.task.sessionTtlMs)
@@ -70,6 +95,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<{
         console.log(
           `[ClaudeMCP] listening at http://${config.host}:${config.port}/sse`,
         );
+        if (config.openai.enabled) {
+          console.log(
+            `[ClaudeMCP] OpenAI endpoint: http://${config.host}:${config.port}/v1/chat/completions`,
+          );
+        }
         console.log(`[ClaudeMCP] log: ${config.logFile}`);
         console.log(`[ClaudeMCP] sessions: ${config.sessionStoreFile}`);
         resolve(s);
