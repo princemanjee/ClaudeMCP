@@ -16,6 +16,7 @@ function isSessionMeta(value: unknown): value is SessionMeta {
 
 export class SessionStore {
   private map: Map<string, SessionMeta> = new Map();
+  private externalKeyIndex: Map<string, string> = new Map();
   private writeQueue: Promise<void> = Promise.resolve();
   private locks: Map<string, Promise<unknown>> = new Map();
 
@@ -26,16 +27,21 @@ export class SessionStore {
       await stat(this.storeFile);
     } catch {
       this.map = new Map();
+      this.externalKeyIndex = new Map();
       return;
     }
     try {
       const raw = await readFile(this.storeFile, "utf8");
       const parsed: unknown = JSON.parse(raw);
       this.map = new Map();
+      this.externalKeyIndex = new Map();
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         for (const [key, value] of Object.entries(parsed)) {
           if (isSessionMeta(value)) {
             this.map.set(key, value);
+            if (value.externalKey) {
+              this.externalKeyIndex.set(value.externalKey, value.sessionId);
+            }
           } else {
             console.warn(
               `[sessionStore] skipping malformed entry for sessionId="${key}"`,
@@ -49,6 +55,7 @@ export class SessionStore {
         (err as Error).message,
       );
       this.map = new Map();
+      this.externalKeyIndex = new Map();
     }
   }
 
@@ -68,6 +75,12 @@ export class SessionStore {
     return best;
   }
 
+  findByExternalKey(key: string): SessionMeta | null {
+    const sid = this.externalKeyIndex.get(key);
+    if (!sid) return null;
+    return this.map.get(sid) ?? null;
+  }
+
   async create(sessionId: string, workDir: string): Promise<SessionMeta> {
     const now = new Date().toISOString();
     const meta: SessionMeta = {
@@ -81,6 +94,58 @@ export class SessionStore {
       this.map.set(sessionId, meta);
     });
     return meta;
+  }
+
+  async createWithExternalKey(
+    sessionId: string,
+    workDir: string,
+    externalKey: string,
+  ): Promise<SessionMeta> {
+    const now = new Date().toISOString();
+    const meta: SessionMeta = {
+      sessionId,
+      workDir,
+      createdAt: now,
+      lastUsedAt: now,
+      turnCount: 0,
+      externalKey,
+    };
+    await this.mutateAndPersist(() => {
+      // If another session currently owns this externalKey, retire its mapping.
+      // The other session stays in the store (only the key is reassigned).
+      const prior = this.externalKeyIndex.get(externalKey);
+      if (prior && prior !== sessionId) {
+        const priorMeta = this.map.get(prior);
+        if (priorMeta) {
+          this.map.set(prior, { ...priorMeta, externalKey: undefined });
+        }
+      }
+      this.map.set(sessionId, meta);
+      this.externalKeyIndex.set(externalKey, sessionId);
+    });
+    return meta;
+  }
+
+  async setExternalKey(
+    sessionId: string,
+    externalKey: string,
+  ): Promise<void> {
+    await this.mutateAndPersist(() => {
+      const existing = this.map.get(sessionId);
+      if (!existing) return;
+      if (existing.externalKey) {
+        this.externalKeyIndex.delete(existing.externalKey);
+      }
+      const prior = this.externalKeyIndex.get(externalKey);
+      if (prior && prior !== sessionId) {
+        const priorMeta = this.map.get(prior);
+        if (priorMeta) {
+          this.map.set(prior, { ...priorMeta, externalKey: undefined });
+        }
+      }
+      this.map.set(sessionId, { ...existing, externalKey });
+      this.externalKeyIndex.set(externalKey, sessionId);
+    });
   }
 
   async update(sessionId: string): Promise<SessionMeta | null> {
@@ -105,6 +170,9 @@ export class SessionStore {
       for (const [id, meta] of this.map) {
         if (Date.parse(meta.lastUsedAt) < threshold) {
           this.map.delete(id);
+          if (meta.externalKey) {
+            this.externalKeyIndex.delete(meta.externalKey);
+          }
           removed++;
         }
       }
@@ -115,12 +183,8 @@ export class SessionStore {
   withLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     const prior = this.locks.get(sessionId) ?? Promise.resolve();
     const next = prior.then(() => fn());
-    // Store a swallowed copy so a thrown error doesn't poison subsequent
-    // acquisitions on the same key.
     const stored = next.catch(() => void 0);
     this.locks.set(sessionId, stored);
-    // Clear the entry once this one settles, unless a newer acquisition
-    // has already replaced it.
     stored.finally(() => {
       if (this.locks.get(sessionId) === stored) {
         this.locks.delete(sessionId);

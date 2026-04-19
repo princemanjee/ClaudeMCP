@@ -184,4 +184,58 @@ describe("SessionStore", () => {
     expect(s.get("bad2")).toBe(null);
     expect(s.get("bad3")).toBe(null);
   });
+
+  test("findByExternalKey returns the right entry", async () => {
+    const s = new SessionStore(storeFile);
+    await s.load();
+    await s.createWithExternalKey("sid-1", "/w", "key-abc");
+    const found = s.findByExternalKey("key-abc");
+    expect(found?.sessionId).toBe("sid-1");
+    expect(found?.externalKey).toBe("key-abc");
+  });
+
+  test("findByExternalKey returns null on miss", async () => {
+    const s = new SessionStore(storeFile);
+    await s.load();
+    await s.createWithExternalKey("sid-1", "/w", "key-abc");
+    expect(s.findByExternalKey("key-nope")).toBe(null);
+  });
+
+  test("setExternalKey replaces the old key mapping", async () => {
+    const s = new SessionStore(storeFile);
+    await s.load();
+    await s.createWithExternalKey("sid-1", "/w", "key-old");
+    await s.setExternalKey("sid-1", "key-new");
+    expect(s.findByExternalKey("key-old")).toBe(null);
+    expect(s.findByExternalKey("key-new")?.sessionId).toBe("sid-1");
+  });
+
+  test("load rebuilds the shadow index from disk", async () => {
+    const s1 = new SessionStore(storeFile);
+    await s1.load();
+    await s1.createWithExternalKey("sid-1", "/w", "key-persist");
+    const s2 = new SessionStore(storeFile);
+    await s2.load();
+    expect(s2.findByExternalKey("key-persist")?.sessionId).toBe("sid-1");
+  });
+
+  test("TTL eviction removes external-key mapping", async () => {
+    const s = new SessionStore(storeFile);
+    await s.load();
+    await s.createWithExternalKey("sid-old", "/w", "key-old");
+    await new Promise((r) => setTimeout(r, 20));
+    await s.createWithExternalKey("sid-new", "/w", "key-new");
+    await s.evictExpired(15);
+    expect(s.findByExternalKey("key-old")).toBe(null);
+    expect(s.findByExternalKey("key-new")?.sessionId).toBe("sid-new");
+  });
+
+  test("creating a session with an already-used external key retires the old mapping", async () => {
+    const s = new SessionStore(storeFile);
+    await s.load();
+    await s.createWithExternalKey("sid-old", "/w", "key-shared");
+    await s.createWithExternalKey("sid-new", "/w", "key-shared");
+    const found = s.findByExternalKey("key-shared");
+    expect(found?.sessionId).toBe("sid-new");
+  });
 });
