@@ -1,0 +1,72 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+const MAX_OUTPUT_BYTES = 10 * 1024;
+const QUESTION_PHRASES = [
+    "which do you",
+    "should i",
+    "do you want",
+    "please clarify",
+    "can you tell me",
+];
+export function truncateUtf8(input, maxBytes) {
+    const buf = Buffer.from(input, "utf8");
+    if (buf.byteLength <= maxBytes) {
+        return { text: input, truncated: false };
+    }
+    // Walk back from maxBytes until we land on a code-point boundary.
+    // UTF-8 continuation bytes match 10xxxxxx (0x80..0xBF).
+    let end = maxBytes;
+    while (end > 0 && (buf[end] !== undefined) && (buf[end] & 0xc0) === 0x80) {
+        end--;
+    }
+    return { text: buf.subarray(0, end).toString("utf8"), truncated: true };
+}
+export function containsQuestionHeuristic(output) {
+    const trimmed = output.trim();
+    if (trimmed.length === 0)
+        return false;
+    if (trimmed.endsWith("?"))
+        return true;
+    const lower = trimmed.toLowerCase();
+    return QUESTION_PHRASES.some((p) => lower.includes(p));
+}
+export class Logger {
+    logFile;
+    queue = Promise.resolve();
+    dirEnsured = false;
+    constructor(logFile) {
+        this.logFile = logFile;
+    }
+    async ensureDir() {
+        if (this.dirEnsured)
+            return;
+        // Set the flag before awaiting so concurrent callers short-circuit.
+        // mkdir({recursive}) is idempotent, so double-issuing is harmless
+        // but pointless.
+        this.dirEnsured = true;
+        await mkdir(dirname(this.logFile), { recursive: true });
+    }
+    log(entry) {
+        // Truncation happens before enqueue so callers can see the final form
+        // in tests via readback. Mutates a copy, not the caller's object.
+        const truncated = truncateUtf8(entry.output ?? "", MAX_OUTPUT_BYTES);
+        const toWrite = {
+            ...entry,
+            output: truncated.text,
+            ...(truncated.truncated ? { outputTruncated: true } : {}),
+        };
+        this.queue = this.queue.then(async () => {
+            await this.ensureDir();
+            await appendFile(this.logFile, JSON.stringify(toWrite) + "\n", "utf8");
+        });
+        return this.queue;
+    }
+    /**
+     * Awaits any pending writes. Call this before process exit so queued
+     * entries aren't dropped.
+     */
+    flush() {
+        return this.queue;
+    }
+}
+//# sourceMappingURL=logger.js.map
