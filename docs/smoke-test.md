@@ -16,12 +16,12 @@ npm run build
 npm start
 ```
 
-Expected: `[ClaudeMCP] listening at http://127.0.0.1:3000/sse` in the console.
+Expected: `[ClaudeMCP] listening at http://127.0.0.1:8899/sse` in the console.
 
 ## 2. Health check
 
 ```
-curl http://127.0.0.1:3000/health
+curl http://127.0.0.1:8899/health
 ```
 
 Expected: `{"ok":true,"sessions":N}` where N is your current session count.
@@ -29,7 +29,7 @@ Expected: `{"ok":true,"sessions":N}` where N is your current session count.
 ## 3. Ask smoke
 
 Use a small Python or Node script to exercise the MCP SSE endpoint. Simplest
-quick check: open `http://127.0.0.1:3000/sse` in a browser — you should see
+quick check: open `http://127.0.0.1:8899/sse` in a browser — you should see
 an SSE stream start (a blank page that stays open). Do not leave this open
 during a real call; it claims the single active transport slot.
 
@@ -59,10 +59,17 @@ prompt. The response should reference the prior turn. Verify
 
 Start the server as usual, then verify `POST /v1/chat/completions` works:
 
+The shipped config requires an `Authorization` header. Set it first (value from `configs/default.json` -> `openai.requireAuthHeader`):
+
 ```
-curl -s -X POST http://127.0.0.1:3000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude","messages":[{"role":"user","content":"say hi briefly"}]}'
+set AUTH=Bearer <paste-your-secret-here>
+```
+
+```
+curl -s -X POST http://127.0.0.1:8899/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: %AUTH%" ^
+  -d "{\"model\":\"claude\",\"messages\":[{\"role\":\"user\",\"content\":\"say hi briefly\"}]}"
 ```
 
 Expected: JSON response with `choices[0].message.content` containing Claude's greeting. A new line should appear in `logs/activity.log` with `tool: "openai_completion"` and `openaiMode: "fresh"`.
@@ -70,13 +77,10 @@ Expected: JSON response with `choices[0].message.content` containing Claude's gr
 Run a second call that includes the first assistant reply to verify session resume:
 
 ```
-curl -s -X POST http://127.0.0.1:3000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude","messages":[
-    {"role":"user","content":"say hi briefly"},
-    {"role":"assistant","content":"<content from first reply>"},
-    {"role":"user","content":"in french now"}
-  ]}'
+curl -s -X POST http://127.0.0.1:8899/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: %AUTH%" ^
+  -d "{\"model\":\"claude\",\"messages\":[{\"role\":\"user\",\"content\":\"say hi briefly\"},{\"role\":\"assistant\",\"content\":\"<content from first reply>\"},{\"role\":\"user\",\"content\":\"in french now\"}]}"
 ```
 
 The log entry should show `openaiMode: "resumed"`. Check `data/sessions.json` — one entry with `externalKey` set and `turnCount: 1`.
@@ -85,8 +89,8 @@ The log entry should show `openaiMode: "resumed"`. Check `data/sessions.json` �
 
 In Agent Zero's settings, configure a "Custom OpenAI-compatible endpoint" provider:
 
-- **Base URL:** `http://host.docker.internal:3000/v1`
-- **API key:** any non-empty string (e.g., `sk-unused`)
+- **Base URL:** `http://host.docker.internal:8899/v1` (from inside a Docker container) or `http://<your-lan-ip>:8899/v1` (from another device on your LAN)
+- **API key:** the `requireAuthHeader` value from `configs/default.json` minus the `Bearer ` prefix. Agent Zero will prepend `Bearer ` automatically.
 - **Model name:** anything (ignored — Claude Code uses whatever the Max plan ships)
 
 Agent Zero will call `POST /v1/chat/completions` with its full message+tool payload. Watch `logs/activity.log` for `openai_completion` entries to see what's happening.

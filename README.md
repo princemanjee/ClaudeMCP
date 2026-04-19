@@ -16,7 +16,7 @@ npm start
 
 ## Endpoints
 
-The server exposes two independent interfaces on the same port (3000 by default):
+The server exposes two independent interfaces on the same port (8899 by default):
 
 - **`/sse` + `/message`** — MCP-over-SSE for tool integrations (Agent Zero's tool calls, Claude Desktop, etc.). Two MCP tools: `claude_ask` (stateless chat) and `claude_task` (stateful agent task).
 - **`/v1/chat/completions`** — OpenAI-compatible chat completions endpoint. Lets Agent Zero (or any LiteLLM-compatible client) use Claude Code CLI as its reasoning model via prompt-engineered XML tool calling. Streaming and non-streaming both supported.

@@ -1,6 +1,6 @@
 {
-  "port": 3000,
-  "host": "127.0.0.1",
+  "port": 8899,
+  "host": "0.0.0.0",
   "logFile": "logs/activity.log",
   "sessionStoreFile": "data/sessions.json",
   "claudeCommand": "claude",
@@ -18,7 +18,7 @@
   },
   "openai": {
     "enabled": true,
-    "requireAuthHeader": null,
+    "requireAuthHeader": "Bearer 5ed044bd845999345afc954c320af9e4878a7ef4948a0461",
     "timeoutMs": 120000
   }
 }
