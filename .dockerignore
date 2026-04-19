@@ -1,0 +1,16 @@
+node_modules
+dist
+logs
+data
+scratch
+.git
+.gitignore
+.env
+.env.local
+*.tmp
+coverage
+tests
+docs
+.vscode
+.idea
+*.log

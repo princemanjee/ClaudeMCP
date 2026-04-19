@@ -1,0 +1,24 @@
+{
+  "port": 8899,
+  "host": "0.0.0.0",
+  "logFile": "logs/activity.log",
+  "sessionStoreFile": "data/sessions.json",
+  "claudeCommand": "claude",
+  "ask": {
+    "timeoutMs": 60000,
+    "allowedTools": ""
+  },
+  "task": {
+    "defaultSessionMode": "session",
+    "defaultWorkDir": "/scratch",
+    "timeoutMs": 600000,
+    "allowedTools": "Read,Edit,Write,Bash,Glob,Grep",
+    "dangerouslySkipPermissions": true,
+    "sessionTtlMs": 86400000
+  },
+  "openai": {
+    "enabled": true,
+    "requireAuthHeader": null,
+    "timeoutMs": 120000
+  }
+}

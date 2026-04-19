@@ -14,6 +14,39 @@ npm run build
 npm start
 ```
 
+## Docker
+
+A containerized image is provided so you can run the server without
+installing Node or Claude Code on the host. Auth is shared from the
+host's `~/.claude` directory via a volume mount.
+
+**One-time setup:**
+
+```
+cp .env.example .env
+# Edit .env and set CLAUDE_AUTH_DIR (your host's Claude auth path)
+# and CLAUDE_MCP_OPENAI_AUTH_HEADER (a Bearer token of your choice)
+docker compose build
+```
+
+**Run:**
+
+```
+docker compose up -d
+docker compose logs -f
+```
+
+The container exposes port 8899 on all interfaces, so other devices on
+your LAN can reach it at `http://<your-lan-ip>:8899`. Persistent volumes
+are mounted for `logs/`, `data/`, and `scratch/` (the default workdir
+for `claude_task`).
+
+Image is multi-stage and lightweight (~250MB). Cross-platform: builds
+the right architecture (amd64 on Windows/Linux, arm64 on Apple Silicon)
+when you run `docker compose build` locally.
+
+
+
 ## Endpoints
 
 The server exposes two independent interfaces on the same port (8899 by default):

@@ -1,0 +1,26 @@
+services:
+  claudemcp:
+    build: .
+    image: claudemcp:0.2.0
+    container_name: claudemcp
+    ports:
+      - "8899:8899"
+    volumes:
+      # Host's Claude auth dir → container so it inherits your Max session.
+      # Set CLAUDE_AUTH_DIR in .env (Windows: C:/Users/you/.claude, macOS: /Users/you/.claude)
+      - "${CLAUDE_AUTH_DIR:?set CLAUDE_AUTH_DIR in .env to your host's Claude auth directory}:/root/.claude"
+      # Persistent activity log + session store across container restarts
+      - "./logs:/app/logs"
+      - "./data:/app/data"
+      # Working directory for claude_task; expose to host so you can inspect what Claude wrote
+      - "./scratch:/scratch"
+    environment:
+      # Bearer token required by /v1/chat/completions. Set in .env.
+      - CLAUDE_MCP_OPENAI_AUTH_HEADER=${CLAUDE_MCP_OPENAI_AUTH_HEADER:?set CLAUDE_MCP_OPENAI_AUTH_HEADER in .env (full value, e.g. "Bearer abc123")}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8899/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
