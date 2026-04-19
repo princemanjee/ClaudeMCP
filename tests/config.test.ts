@@ -12,6 +12,9 @@ beforeEach(() => {
   delete process.env.CLAUDE_MCP_HOST;
   delete process.env.CLAUDE_MCP_LOG_FILE;
   delete process.env.CLAUDE_MCP_SESSION_STORE_FILE;
+  delete process.env.CLAUDE_MCP_OPENAI_ENABLED;
+  delete process.env.CLAUDE_MCP_OPENAI_AUTH_HEADER;
+  delete process.env.CLAUDE_MCP_OPENAI_TIMEOUT_MS;
 });
 
 afterEach(() => {
@@ -20,6 +23,9 @@ afterEach(() => {
   delete process.env.CLAUDE_MCP_HOST;
   delete process.env.CLAUDE_MCP_LOG_FILE;
   delete process.env.CLAUDE_MCP_SESSION_STORE_FILE;
+  delete process.env.CLAUDE_MCP_OPENAI_ENABLED;
+  delete process.env.CLAUDE_MCP_OPENAI_AUTH_HEADER;
+  delete process.env.CLAUDE_MCP_OPENAI_TIMEOUT_MS;
 });
 
 function write(name: string, content: unknown): string {
@@ -113,5 +119,26 @@ describe("loadConfig", () => {
 
   test("throws a clear error when file does not exist", () => {
     expect(() => loadConfig(join(tmpDir, "nope.json"))).toThrow(/nope\.json/);
+  });
+
+  test("applies openai defaults when block is omitted", () => {
+    const path = write("c.json", {
+      task: { defaultWorkDir: "/x" },
+    });
+    const cfg = loadConfig(path);
+    expect(cfg.openai.enabled).toBe(true);
+    expect(cfg.openai.requireAuthHeader).toBe(null);
+    expect(cfg.openai.timeoutMs).toBe(120000);
+  });
+
+  test("env vars override openai config", () => {
+    process.env.CLAUDE_MCP_OPENAI_ENABLED = "false";
+    process.env.CLAUDE_MCP_OPENAI_AUTH_HEADER = "Bearer secret";
+    process.env.CLAUDE_MCP_OPENAI_TIMEOUT_MS = "7000";
+    const path = write("c.json", { task: { defaultWorkDir: "/x" } });
+    const cfg = loadConfig(path);
+    expect(cfg.openai.enabled).toBe(false);
+    expect(cfg.openai.requireAuthHeader).toBe("Bearer secret");
+    expect(cfg.openai.timeoutMs).toBe(7000);
   });
 });

@@ -12,7 +12,10 @@
     "task.timeoutMs": "Per-call timeout for claude_task",
     "task.allowedTools": "Comma-separated CLI allowlist. Ignored when dangerouslySkipPermissions is true",
     "task.dangerouslySkipPermissions": "If true, passes --dangerously-skip-permissions and omits --allowed-tools. MAX BLAST RADIUS",
-    "task.sessionTtlMs": "Sessions untouched longer than this are evicted by the background sweeper"
+    "task.sessionTtlMs": "Sessions untouched longer than this are evicted by the background sweeper",
+    "openai.enabled": "If false, /v1/chat/completions is not mounted (feature flag for rollback)",
+    "openai.requireAuthHeader": "If set, requests must send matching Authorization header. Null disables auth",
+    "openai.timeoutMs": "Per-request timeout for /v1/chat/completions"
   },
   "port": 3000,
   "host": "127.0.0.1",
@@ -30,5 +33,10 @@
     "allowedTools": "Read,Edit,Write,Bash,Glob,Grep",
     "dangerouslySkipPermissions": true,
     "sessionTtlMs": 86400000
+  },
+  "openai": {
+    "enabled": true,
+    "requireAuthHeader": null,
+    "timeoutMs": 120000
   }
 }

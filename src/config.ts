@@ -28,6 +28,13 @@ const ConfigSchema = z.object({
       sessionTtlMs: z.number().int().positive().default(86400000),
     })
     .default({}),
+  openai: z
+    .object({
+      enabled: z.boolean().default(true),
+      requireAuthHeader: z.string().nullable().default(null),
+      timeoutMs: z.number().int().positive().default(120000),
+    })
+    .default({}),
 });
 
 function applyEnvOverrides(cfg: Config): Config {
@@ -35,16 +42,38 @@ function applyEnvOverrides(cfg: Config): Config {
   const hostEnv = process.env.CLAUDE_MCP_HOST;
   const logEnv = process.env.CLAUDE_MCP_LOG_FILE;
   const storeEnv = process.env.CLAUDE_MCP_SESSION_STORE_FILE;
+  const openaiEnabledEnv = process.env.CLAUDE_MCP_OPENAI_ENABLED;
+  const openaiAuthEnv = process.env.CLAUDE_MCP_OPENAI_AUTH_HEADER;
+  const openaiTimeoutEnv = process.env.CLAUDE_MCP_OPENAI_TIMEOUT_MS;
   const next: Config = {
     ...cfg,
     port: portEnv ? Number(portEnv) : cfg.port,
     host: hostEnv ?? cfg.host,
     logFile: logEnv ?? cfg.logFile,
     sessionStoreFile: storeEnv ?? cfg.sessionStoreFile,
+    openai: {
+      ...cfg.openai,
+      enabled:
+        openaiEnabledEnv !== undefined
+          ? openaiEnabledEnv === "true"
+          : cfg.openai.enabled,
+      requireAuthHeader: openaiAuthEnv ?? cfg.openai.requireAuthHeader,
+      timeoutMs: openaiTimeoutEnv
+        ? Number(openaiTimeoutEnv)
+        : cfg.openai.timeoutMs,
+    },
   };
   if (portEnv && (!Number.isInteger(next.port) || next.port <= 0)) {
     throw new Error(
       `CLAUDE_MCP_PORT must be a positive integer, got: ${portEnv}`,
+    );
+  }
+  if (
+    openaiTimeoutEnv &&
+    (!Number.isInteger(next.openai.timeoutMs) || next.openai.timeoutMs <= 0)
+  ) {
+    throw new Error(
+      `CLAUDE_MCP_OPENAI_TIMEOUT_MS must be a positive integer, got: ${openaiTimeoutEnv}`,
     );
   }
   return next;
@@ -72,5 +101,6 @@ export function loadConfig(path: string): Config {
   const withEnv = applyEnvOverrides(parsed.data);
   Object.freeze(withEnv.ask);
   Object.freeze(withEnv.task);
+  Object.freeze(withEnv.openai);
   return Object.freeze(withEnv);
 }

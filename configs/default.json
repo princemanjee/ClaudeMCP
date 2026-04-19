@@ -15,5 +15,10 @@
     "allowedTools": "Read,Edit,Write,Bash,Glob,Grep",
     "dangerouslySkipPermissions": true,
     "sessionTtlMs": 86400000
+  },
+  "openai": {
+    "enabled": true,
+    "requireAuthHeader": null,
+    "timeoutMs": 120000
   }
 }

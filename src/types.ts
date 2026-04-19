@@ -27,6 +27,11 @@ export type Config = {
     dangerouslySkipPermissions: boolean;
     sessionTtlMs: number;
   };
+  openai: {
+    enabled: boolean;
+    requireAuthHeader: string | null;
+    timeoutMs: number;
+  };
 };
 
 export type SessionMeta = {
@@ -35,6 +40,7 @@ export type SessionMeta = {
   createdAt: string;
   lastUsedAt: string;
   turnCount: number;
+  externalKey?: string;
 };
 
 export type ClaudeRunOptions = {
@@ -60,7 +66,7 @@ export type LogEntry = {
   timestamp: string;
   logId: string;
   inReplyToLogId?: string;
-  tool: "claude_ask" | "claude_task";
+  tool: "claude_ask" | "claude_task" | "openai_completion";
   status: "success" | "error" | "timeout";
   durationMs: number;
   sessionId?: string;
@@ -73,4 +79,7 @@ export type LogEntry = {
   containsQuestion: boolean;
   exitCode: number;
   error?: string;
+  openaiMode?: "fresh" | "resumed" | "session-miss";
+  toolCallsEmitted?: number;
+  externalKey?: string;
 };
