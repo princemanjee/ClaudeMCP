@@ -4,7 +4,9 @@ services:
     image: claudemcp:0.2.0
     container_name: claudemcp
     ports:
-      - "8899:8899"
+      # Configurable external port (default 8899) → fixed internal port 3000.
+      # Override HOST_PORT in .env to change what the LAN sees.
+      - "${HOST_PORT:-8899}:3000"
     volumes:
       # Host's Claude auth dir → container so it inherits your Max session.
       # Set CLAUDE_AUTH_DIR in .env (Windows: C:/Users/you/.claude, macOS: /Users/you/.claude)
@@ -19,7 +21,7 @@ services:
       - CLAUDE_MCP_OPENAI_AUTH_HEADER=${CLAUDE_MCP_OPENAI_AUTH_HEADER:?set CLAUDE_MCP_OPENAI_AUTH_HEADER in .env (full value, e.g. "Bearer abc123")}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8899/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

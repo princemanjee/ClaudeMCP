@@ -29,6 +29,6 @@ COPY configs ./configs
 # Mount points exist so volume binds don't create root-owned dirs
 RUN mkdir -p logs data /scratch
 
-EXPOSE 8899
+EXPOSE 3000
 
 CMD ["node", "dist/bin.js", "--config", "configs/docker.json"]
