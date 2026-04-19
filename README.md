@@ -41,9 +41,10 @@ your LAN can reach it at `http://<your-lan-ip>:8899`. Persistent volumes
 are mounted for `logs/`, `data/`, and `scratch/` (the default workdir
 for `claude_task`).
 
-Image is multi-stage and lightweight (~250MB). Cross-platform: builds
-the right architecture (amd64 on Windows/Linux, arm64 on Apple Silicon)
-when you run `docker compose build` locally.
+Image is multi-stage (~800MB — most of it is the Claude Code CLI
+and its dependencies). Cross-platform: builds the right architecture
+(amd64 on Windows/Linux, arm64 on Apple Silicon) when you run
+`docker compose build` locally.
 
 
 
