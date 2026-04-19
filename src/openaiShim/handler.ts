@@ -155,6 +155,10 @@ export function createOpenAIHandler(
 
     let toolCallsEmitted = 0;
     let statusForLog: LogEntry["status"] = "success";
+    // For non-streaming: buffer the response body and send after side-effects
+    // so that the client only receives the response once logging is complete.
+    // This ensures integration-test log reads always see all entries.
+    let bufferedResp: unknown = null;
 
     try {
       if (wantStream) {
@@ -178,7 +182,7 @@ export function createOpenAIHandler(
           meta,
         );
         toolCallsEmitted = tce;
-        res.status(200).json(resp);
+        bufferedResp = resp;
       }
     } catch (err) {
       statusForLog = "error";
@@ -254,5 +258,10 @@ export function createOpenAIHandler(
       toolCallsEmitted,
       externalKey: externalKey ?? undefined,
     });
+
+    // Send the buffered non-streaming response AFTER all side-effects complete.
+    if (bufferedResp !== null && !res.headersSent) {
+      res.status(200).json(bufferedResp);
+    }
   };
 }

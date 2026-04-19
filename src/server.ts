@@ -109,8 +109,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<{
 
   async function close(): Promise<void> {
     clearInterval(sweepTimer);
+    // Forcibly close keep-alive / SSE connections so the server drains fast
+    // and any file-handle locks are released (important on Windows).
+    (httpServer as unknown as { closeAllConnections?: () => void })
+      .closeAllConnections?.();
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     await logger.flush();
+    // On Windows, spawned child processes may hold a directory handle for a
+    // brief moment after exit (cwd lock). A short drain gives the OS time to
+    // release those handles before callers delete the working directory.
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
 
   return { close, port: config.port };
