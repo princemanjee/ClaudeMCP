@@ -54,3 +54,41 @@ Expected: the tool returns a text response describing the directory and
 Call `claude_task` again with the `sessionId` from step 4 and a follow-up
 prompt. The response should reference the prior turn. Verify
 `data/sessions.json` shows `turnCount: 1`.
+
+## 6. OpenAI-compat endpoint (for Agent Zero brain use)
+
+Start the server as usual, then verify `POST /v1/chat/completions` works:
+
+```
+curl -s -X POST http://127.0.0.1:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","messages":[{"role":"user","content":"say hi briefly"}]}'
+```
+
+Expected: JSON response with `choices[0].message.content` containing Claude's greeting. A new line should appear in `logs/activity.log` with `tool: "openai_completion"` and `openaiMode: "fresh"`.
+
+Run a second call that includes the first assistant reply to verify session resume:
+
+```
+curl -s -X POST http://127.0.0.1:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude","messages":[
+    {"role":"user","content":"say hi briefly"},
+    {"role":"assistant","content":"<content from first reply>"},
+    {"role":"user","content":"in french now"}
+  ]}'
+```
+
+The log entry should show `openaiMode: "resumed"`. Check `data/sessions.json` — one entry with `externalKey` set and `turnCount: 1`.
+
+### Agent Zero setup (brain mode)
+
+In Agent Zero's settings, configure a "Custom OpenAI-compatible endpoint" provider:
+
+- **Base URL:** `http://host.docker.internal:3000/v1`
+- **API key:** any non-empty string (e.g., `sk-unused`)
+- **Model name:** anything (ignored — Claude Code uses whatever the Max plan ships)
+
+Agent Zero will call `POST /v1/chat/completions` with its full message+tool payload. Watch `logs/activity.log` for `openai_completion` entries to see what's happening.
+
+**Fragility note:** Claude is trained to use tools, not to emit XML requests for a caller to execute. Expect occasional format deviations (ambiguous replies, tool-use tags with surrounding prose). The parser falls back to plain-text content in those cases, which Agent Zero may then retry. If you see frequent fallbacks, consider reverting to MCP-mode usage (where Claude IS the agent, not the brain).

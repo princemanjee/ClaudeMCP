@@ -14,12 +14,14 @@ npm run build
 npm start
 ```
 
-The server listens at `http://127.0.0.1:3000/sse` with two MCP tools:
+## Endpoints
 
-- **`claude_ask(prompt)`** — stateless, no file access. Use as a chat endpoint.
-- **`claude_task(prompt, workDir?, sessionMode?, sessionId?, allowedTools?)`** — full Claude Code agent with session continuity.
+The server exposes two independent interfaces on the same port (3000 by default):
 
-See `configs/example.json` for every knob, and `docs/superpowers/specs/2026-04-18-claude-mcp-design.md` for the full design.
+- **`/sse` + `/message`** — MCP-over-SSE for tool integrations (Agent Zero's tool calls, Claude Desktop, etc.). Two MCP tools: `claude_ask` (stateless chat) and `claude_task` (stateful agent task).
+- **`/v1/chat/completions`** — OpenAI-compatible chat completions endpoint. Lets Agent Zero (or any LiteLLM-compatible client) use Claude Code CLI as its reasoning model via prompt-engineered XML tool calling. Streaming and non-streaming both supported.
+
+See `configs/example.json` for every knob, and the design specs under `docs/superpowers/specs/` for details. Toggle the OpenAI endpoint off via `openai.enabled: false` if you only want the MCP path.
 
 ## Requirements
 
@@ -51,6 +53,9 @@ Claude runs with full tool access — any shell command, any file write. This
 is intentional for personal use but do not expose the server beyond
 `127.0.0.1` without also flipping this to `false` and setting a tool
 allowlist.
+
+The OpenAI endpoint has no authentication by default (`openai.requireAuthHeader: null`).
+If you expose the server beyond localhost, also set an auth header.
 
 ## License
 
