@@ -33,12 +33,13 @@ This design closes those gaps to the extent feasible while preserving the origin
 
 ## Constraints and assumptions
 
-- Host OS is Windows 11. Node.js 20+, TypeScript, Express, `@modelcontextprotocol/sdk`. Same toolchain as the existing implementation.
+- Host OS is Windows 11 or macOS on Apple Silicon (arm64). Node.js 20+, TypeScript, Express, `@modelcontextprotocol/sdk`. Same toolchain as the existing implementation. All native dependencies (`better-sqlite3`, `tree-kill`, zstd) ship prebuilt binaries for both platforms — no per-OS code paths required.
 - The `claude` CLI is the only authenticated path to Anthropic. Its capability surface is the upper bound on what the server can honor end-to-end.
 - The CLI's `stream-json` output emits Anthropic-shaped content blocks including native `tool_use`. Verified empirically in current CLI versions; behavior change is an upgrade-time risk.
 - The CLI accepts `--model <id>` with Anthropic model IDs and short aliases. Unknown IDs surface as CLI errors, which the server translates to 400.
 - A local OpenAI-compatible embeddings backend (LM Studio, Ollama, llama-server) is reachable from the host. URL configurable; default targets LM Studio's default port.
-- `better-sqlite3` is acceptable as a native dependency on Windows. Falls within personal-use scope.
+- `better-sqlite3` is acceptable as a native dependency on Windows and macOS. Falls within personal-use scope.
+- Existing Windows-specific runtime behavior (50 ms drain on shutdown to release cwd handles) is harmless on macOS and stays as-is rather than being gated behind `process.platform` checks.
 
 ## Architecture
 
