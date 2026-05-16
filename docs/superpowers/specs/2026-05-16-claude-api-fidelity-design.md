@@ -19,15 +19,16 @@ This design closes those gaps to the extent feasible while preserving the origin
 - Add four backends behind a shared `Backend` interface:
   - **Claude** (existing concept, refactored): spawns `claude` CLI, rides Claude Max subscription.
   - **Gemini** (new): spawns `gemini` CLI, rides Google account auth (`gemini auth login`).
-  - **LM Studio** (new): HTTP client to LM Studio's OpenAI-compatible server (default `:1234`), riding the user's local hardware.
-  - **Ollama** (new): HTTP client to Ollama's native API (default `:11434`), same.
-- The model router selects the backend per request based on requested model ID, with prefix-override syntax (`lmstudio/qwen3-coder-30b`, `ollama/llama-3.3-70b`) and a startup probe that discovers loaded local models.
+  - **LM Studio** (new): HTTP client to LM Studio's OpenAI-compatible server. Supports multiple instances (local default `:1234`, plus any number of remote LM Studio nodes — e.g., "LM Link"-style cross-machine setups).
+  - **Ollama** (new): HTTP client to Ollama's native API (default `:11434`). Defaults to the OpenAI-compatibility layer for code reuse; switches to native API via `config.ollama.useNativeApi: true` when features like `keep_alive`, `format: "json"`, or `raw` mode are needed. Supports multiple instances same as LM Studio.
+- The model router selects the backend per request based on requested model ID, with prefix-override syntax (`lmstudio/qwen3-coder-30b`, `ollama/llama-3.3-70b`, plus optional `lmstudio:<instance>/<model>` for disambiguating across instances) and a startup probe that discovers loaded local models on every configured instance.
 - Allow any shim to target any backend: an Anthropic-SDK client requesting `model: "qwen3-coder-30b"` runs through LM Studio and gets translated back to Anthropic SSE shape; a Gemini-SDK client requesting `model: "claude-opus-4-7"` runs through the Claude CLI. This falls out of a normalized internal backend contract.
 - Make the `model` field functional with passthrough + curated aliases across all backends, plus an opt-in heuristic router and a `reasoning_effort` override that maps to per-backend tiers.
 - Honor backend-native features per a documented capability matrix: native `tool_use` round-trip (Anthropic, Gemini, LM Studio, Ollama), multimodal image/document blocks (all four when the underlying model supports vision), `stop_sequences` (native on LM Studio/Ollama, server-side cut on Claude/Gemini), `tool_choice`, `metadata` passthrough, stateless conversation model. Sampling params (`temperature`/`top_p`/`top_k`) are honored on LM Studio/Ollama (where the runtime supports them) and silently ignored on Claude/Gemini CLI backends.
 - Unify embeddings under the backend system: route `/v1/embeddings` through whichever backend serves the requested embedding model (typically LM Studio or Ollama). The standalone embeddings-proxy concept is retired.
 - Implement local equivalents for features without a backend path: persistent Files API (disk-backed content cache, shared across all backends via content addressing), token counting (backend-aware estimator), response cache (reinterpreted `cache_control`).
 - Add a durable request/response archive (SQLite) capturing every call across all backends, for retrospective review and opt-in exact-match reuse.
+- Add a localhost-only web admin UI for live backend status, model discovery, and config editing. Uses vanilla HTML + Alpine.js served from the same Node process — no build step.
 - Preserve the existing OpenAI chat-completions pipeline behavior — no regressions for current Agent Zero usage.
 
 ## Non-goals
@@ -38,7 +39,8 @@ This design closes those gaps to the extent feasible while preserving the origin
 - Full internal-pipeline unification across shims. The three shims (Anthropic, OpenAI, Gemini) remain **parallel** at the HTTP-fidelity layer — each shim owns its own request/response translators — because the wire formats differ enough that sharing translation code would create more friction than it removes. **Backends, however, share a normalized internal contract** (see Architecture); this is the necessary departure from full duplication for the 3×4 shim-by-backend matrix.
 - Native multimodal / native `tool_use` / `cache_control` in the OpenAI shim. Those features land on the Anthropic and Gemini shims only.
 - Reverse-engineering Claude.ai's or Gemini's web APIs, or driving the Claude Desktop / Gemini app programmatically. All considered and rejected as brittle / out-of-scope.
-- Auto-loading models in LM Studio or Ollama. The server probes loaded models at startup and rebuilds the map on a configurable interval, but it does not push models into either backend — the user is responsible for loading what they want available.
+- Auto-loading models in LM Studio or Ollama. The server probes loaded models at startup and rebuilds the map on a configurable interval, but it does not push models into either backend — the user is responsible for loading what they want available. (The admin UI surfaces what is currently loaded; it does not initiate downloads or unloads.)
+- Production-grade admin UI. The shipped UI is for personal-use local administration: minimal styling, no role-based auth beyond the shared API key, no audit log of config edits. Hardening for multi-user or public exposure is out of scope.
 - Standalone embeddings proxy. Retired in favor of backend-routed embeddings (route by model name).
 - Log rotation, multi-user auth, quotas, or public-internet exposure (carried over from the original spec).
 
@@ -47,14 +49,15 @@ This design closes those gaps to the extent feasible while preserving the origin
 - Host OS is Windows 11 or macOS on Apple Silicon (arm64). Node.js 20+, TypeScript, Express, `@modelcontextprotocol/sdk`. Same toolchain as the existing implementation. All native dependencies (`better-sqlite3`, `tree-kill`, zstd) ship prebuilt binaries for both platforms — no per-OS code paths required.
 - The `claude` CLI is the only authenticated path to Anthropic. Its capability surface is the upper bound on what the server can honor end-to-end for Claude models.
 - The `gemini` CLI is the only authenticated path to Google Gemini. Pre-authenticated via `gemini auth login` against the user's personal Google account (which has a Gemini Pro / Google One AI Premium subscription, providing generous quota). Same upper-bound rule applies for Gemini models.
-- LM Studio runs locally with its OpenAI-compatible server enabled (default `http://127.0.0.1:1234/v1`). User is responsible for loading the models they want available; the server discovers loaded models via `GET /v1/models`.
-- Ollama runs locally with its daemon listening on `http://127.0.0.1:11434`. The backend uses Ollama's native API (`/api/chat`, `/api/embeddings`, `/api/tags`) rather than its OpenAI-compat shim, since native API exposes full feature surface (tool calling, multimodal) more reliably across versions.
+- LM Studio runs on one or more reachable hosts with its OpenAI-compatible server enabled (default local `http://127.0.0.1:1234/v1`). User is responsible for loading the models they want available on each instance; the server discovers loaded models on every instance via `GET /v1/models`.
+- Ollama runs on one or more reachable hosts (default local `http://127.0.0.1:11434`). The backend defaults to Ollama's OpenAI-compatibility layer (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) for code reuse with the LM Studio backend; instances with `useNativeApi: true` switch to native (`/api/chat`, `/api/embed`, `/api/tags`) to unlock `keep_alive`, `format: "json"`, `raw`, and historically more reliable native tool calling.
 - All four backends emit some form of streamable output that can be normalized into a common event format:
   - Claude CLI: `stream-json` (`message_start`, `content_block_delta`, etc.).
   - Gemini CLI: Gemini-shaped `candidates[].content.parts[]` deltas.
   - LM Studio: OpenAI SSE chunks (`data: {...}\n\n`).
-  - Ollama: NDJSON lines (`{"message": {...}}\n`).
-  A small adapter per backend produces a unified internal event stream (`NormalizedEvent`).
+  - Ollama (OpenAI-compat mode): OpenAI SSE chunks — adapter shared with LM Studio.
+  - Ollama (native mode): NDJSON lines (`{"message": {...}}\n`).
+  A small adapter per backend (or per mode for Ollama) produces a unified internal event stream (`NormalizedEvent`).
 - All four backends select model via their native mechanism (CLI `--model` flag for Claude/Gemini; `model` request field for LM Studio/Ollama). Unknown model IDs surface as 400 from the backend; the server forwards the error verbatim.
 - `better-sqlite3` is acceptable as a native dependency on Windows and macOS. Falls within personal-use scope.
 - Existing Windows-specific runtime behavior (50 ms drain on shutdown to release cwd handles) is harmless on macOS and stays as-is rather than being gated behind `process.platform` checks.
@@ -78,11 +81,13 @@ ClaudeMCP/
 │   ├── auth.ts                      # NEW — x-api-key / Bearer / x-goog-api-key
 │   ├── backends/                    # NEW — normalized backend contract + impls
 │   │   ├── types.ts                 #   Backend interface, capabilities, normalized types
-│   │   ├── registry.ts              #   build backend set from config; startup model probe
+│   │   ├── registry.ts              #   build backend set from config; startup + periodic probe; multi-instance aware
+│   │   ├── openaiCompatClient.ts    #   shared HTTP client for any OpenAI-shape server
 │   │   ├── claudeBackend.ts         #   wraps claudeRunner; CLI ↔ normalized
 │   │   ├── geminiBackend.ts         #   wraps geminiRunner; CLI ↔ normalized
-│   │   ├── lmstudioBackend.ts       #   HTTP client to LM Studio /v1/*; OpenAI ↔ normalized
-│   │   └── ollamaBackend.ts         #   HTTP client to Ollama /api/*; Ollama ↔ normalized
+│   │   ├── lmstudioBackend.ts       #   uses openaiCompatClient; per-instance dispatch
+│   │   ├── ollamaBackend.ts         #   uses openaiCompatClient (OpenAI-compat mode) OR ollamaNativeClient (native mode); per-instance dispatch
+│   │   └── ollamaNativeClient.ts    #   NDJSON streaming + /api/* request shaping
 │   ├── runners/                     # NEW — only modules that spawn CLIs
 │   │   ├── claudeRunner.ts          #   moved from src/; existing one-shot invoker
 │   │   ├── claudeStreamRunner.ts    #   moved from src/; existing streaming invoker
@@ -113,7 +118,14 @@ ClaudeMCP/
 │   │   └── types.ts
 │   ├── admin/                       # NEW
 │   │   ├── archive.ts               # /admin/archive* handlers
-│   │   └── backends.ts              # /admin/backends — discovered models, capability matrix
+│   │   ├── backends.ts              # /admin/backends — discovered models, capability matrix
+│   │   ├── config.ts                # /admin/config — read/write config.json with Zod validation
+│   │   └── ui.ts                    # /admin/ui — serves static index.html + Alpine.js app
+│   ├── admin-ui/                    # NEW — vanilla static assets, no build step
+│   │   ├── index.html               # single-page app entry
+│   │   ├── app.js                   # Alpine.js components
+│   │   ├── styles.css               # minimal CSS (Pico.css starter)
+│   │   └── icons/                   # backend logos, status indicators
 │   └── tools/                       # existing MCP tools, unchanged
 ├── configs/
 │   ├── default.json                 # extended
@@ -160,10 +172,11 @@ interface Backend {
 
 **Backend registry (`src/backends/registry.ts`):**
 
-- Built at server startup from enabled config blocks.
-- For each enabled backend, calls `listModels()` and merges into a `modelMap: Map<modelId, Backend>`. On collision (same model id exposed by two backends), the backend with higher `config.<backend>.priority` wins; the loser is reachable via prefix syntax (`ollama/llama-3.3-70b`).
-- Re-probes local backends (LM Studio, Ollama) every `config.router.localProbeIntervalMs` (default 60s) to pick up models the user loads/unloads at runtime. Cloud backends are probed once.
-- A failing probe logs a warning but does not block startup; backends whose probe failed return 503 at request time until the next successful probe.
+- Built at server startup from enabled config blocks. For multi-instance backends (LM Studio, Ollama), each configured instance becomes its own entry in the registry, keyed as `<backend>:<instance-name>` internally and surfaced as a single logical backend ID externally.
+- For each instance, calls `listModels()` and merges into a `modelMap: Map<modelId, BackendInstance>`. Collision resolution: instance with higher `priority` wins (config-supplied). Losers remain reachable via fully-qualified prefix syntax (`lmstudio:work-server/qwen3-coder-30b`).
+- Re-probes local backends (LM Studio + Ollama, every configured instance) every `config.router.localProbeIntervalMs` (default 60s) to pick up models the user loads/unloads at runtime. Cloud backends are probed once at startup.
+- A failing probe logs a warning but does not block startup; instances whose probe failed return 503 at request time until the next successful probe.
+- The registry exposes its current state to `/admin/backends` for the UI: per-instance reachability, last successful probe time, loaded models, capability matrix.
 
 **Isolation rules:**
 
@@ -222,8 +235,14 @@ The Gemini shim reuses the same underlying `fileStore.ts`; uploads are dedup'd a
 | GET | `/admin/archive` | Paginated list with filters (`backend`, `session`, `model`, `since`, `until`, `status`, `limit`, `offset`) |
 | GET | `/admin/archive/{id}` | Full entry with decompressed bodies |
 | GET | `/admin/archive/search?q=` | Substring search in request prompts |
-| GET | `/admin/backends` | All enabled backends with their discovered models, capability matrices, last probe time, last probe status |
-| POST | `/admin/backends/reprobe` | Force an immediate model reprobe across local backends |
+| GET | `/admin/backends` | All enabled backend instances with their discovered models, capability matrices, last probe time, last probe status, current reachability |
+| POST | `/admin/backends/reprobe` | Force an immediate reprobe of all local backend instances (or a specific instance via `?instance=lmstudio:work-server`) |
+| POST | `/admin/backends/test` | Test connectivity to a candidate URL without saving — used by the UI's "Test connection" button when adding an instance |
+| GET | `/admin/config` | Full current config JSON (api key redacted to `***`) |
+| PUT | `/admin/config` | Replace config; Zod-validated; atomic write to `configs/default.json`; takes effect for new requests immediately, in-flight requests keep their old snapshot |
+| PATCH | `/admin/config` | JSON-merge-patch update (preferred from UI for granular edits) |
+| GET | `/admin/ui` | Serves the admin SPA static assets (HTML, JS, CSS, icons) |
+| GET | `/admin/ui/*` | SPA asset routes |
 
 ### MCP transport (existing)
 
@@ -391,6 +410,45 @@ System-prompt directives appended based on `tool_choice`:
 
 Best-effort enforcement — the model usually honors but is not guaranteed.
 
+## Admin UI (`src/admin/ui.ts` + `src/admin-ui/`)
+
+A single-page web admin served from the same Node process. Vanilla HTML + Alpine.js + Pico.css — no build step, no React, no bundler. Adds one runtime dep (Alpine via CDN-pinned ESM import) and ships ~500 LOC of frontend.
+
+**Pages / sections** (single SPA, tab-switched):
+
+1. **Dashboard** — backend instances at a glance: reachability dot (green/yellow/red), last probe time, currently-loaded models, request counts in last hour.
+2. **Backends** — per-instance config editor. For each backend block:
+   - Enable/disable toggle.
+   - Add/remove instances (HTTP backends only).
+   - Edit `baseUrl`, `apiKey`, `priority`, `timeoutMs`, `useNativeApi` per instance.
+   - "Test connection" button (calls `POST /admin/backends/test`).
+   - Live-discovered model list per instance, with refresh button.
+3. **Router** — `defaultBackend` dropdown (populated from currently-enabled backends), threshold fields, per-backend `reasoningEffortMap` editor (dropdowns populated from discovered models so the user can't typo a model name).
+4. **General** — `apiKey` (write-only, masked display), archive/cache/files paths and limits, admin-UI binding toggle.
+5. **Archive viewer** — paginated table backed by `/admin/archive`, with filters and detail modal.
+
+**Auth flow:**
+
+- UI is served at `GET /admin/ui` regardless of auth — but the page is just a login prompt until the user supplies the API key.
+- Login posts the API key once; server validates and sets an HttpOnly session cookie with `config.adminUi.sessionTtlMs` lifetime.
+- Subsequent `/admin/*` calls (config, backends, archive) accept either the session cookie or the standard `x-api-key` header.
+- `config.adminUi.bindLocalhost: true` (default) rejects any UI request whose remote address is not `127.0.0.1` / `::1` with a 403. Disabling this is opt-in and surfaces a startup warning.
+
+**Discovery & live state:**
+
+- UI polls `/admin/backends` every 5 seconds for reachability + model lists.
+- Backends section only offers a backend as "selectable" in dropdowns (router, embeddings model selection) if at least one of its instances has a successful recent probe.
+- Adding a new instance + clicking "Save" triggers an immediate reprobe of just that instance (via `?instance=<id>`) so the model list populates without waiting for the periodic sweep.
+
+**Config edits:**
+
+- Each form section has explicit Save / Discard buttons. No autosave.
+- Save sends `PATCH /admin/config` with the changed subtree only.
+- Server applies Zod validation. On failure, UI renders the error inline against the offending field.
+- On success, the UI re-fetches `/admin/config` and rerenders.
+
+**No build step rationale:** Alpine.js (~13 KB minified) is loaded via a pinned CDN URL with SRI. Vanilla HTML/CSS/JS files live in `src/admin-ui/` and are served as static assets. Zero npm-side frontend toolchain (no Vite, Webpack, TypeScript-for-frontend, JSX). This keeps the project deployable as a single `node dist/server.js` invocation with no preceding `npm run build` of a UI.
+
 ## Auth (`auth.ts`)
 
 - Single shared `config.apiKey`. Accept via any of:
@@ -412,7 +470,8 @@ Best-effort enforcement — the model usually honors but is not guaranteed.
   // ... existing fields preserved ...
   "apiKey": "<required-string>",   // no default shipped; startup fails if missing
 
-  // Backend blocks — one per backend, all share the {enabled, priority, timeoutMs} shape
+  // Backend blocks. CLI backends (claude, gemini) have a single config.
+  // HTTP backends (lmstudio, ollama) support multiple instances.
   "claude": {
     "enabled":   true,
     "command":   "claude",
@@ -427,16 +486,29 @@ Best-effort enforcement — the model usually honors but is not guaranteed.
   },
   "lmstudio": {
     "enabled":   true,
-    "baseUrl":   "http://127.0.0.1:1234/v1",
-    "apiKey":    "",                // optional bearer for LM Studio (rarely set)
-    "priority":  50,
-    "timeoutMs": 300000
+    "instances": [
+      {
+        "name":      "local",                       // unique within backend
+        "baseUrl":   "http://127.0.0.1:1234/v1",
+        "apiKey":    "",                            // optional bearer
+        "priority":  50,
+        "timeoutMs": 300000
+      }
+      // additional remote instances appended here for "LM Link"-style multi-host setups
+    ]
   },
   "ollama": {
-    "enabled":   true,
-    "baseUrl":   "http://127.0.0.1:11434",  // native API root, not /v1
-    "priority":  40,
-    "timeoutMs": 300000
+    "enabled":      true,
+    "useNativeApi": false,                          // false → /v1/*, true → /api/*
+    "instances": [
+      {
+        "name":         "local",
+        "baseUrl":      "http://127.0.0.1:11434",   // root URL; useNativeApi decides path suffix
+        "priority":     40,
+        "timeoutMs":    300000,
+        "useNativeApi": null                        // null → inherit from backend block; true/false overrides per-instance
+      }
+    ]
   },
 
   "router": {
@@ -476,15 +548,23 @@ Best-effort enforcement — the model usually honors but is not guaranteed.
     "legacyBackendUrl": "",         // back-compat only; if set, /v1/embeddings bypasses registry
     "legacyApiKey":     "",
     "legacyTimeoutMs":  30000
+  },
+
+  "adminUi": {
+    "enabled":        true,
+    "bindLocalhost":  true,         // refuse non-127.0.0.1 / non-::1 requests when true
+    "sessionTtlMs":   3600000       // browser cookie TTL after UI login
   }
 }
 ```
 
-- Validated via Zod on startup; fail-fast with clear errors.
+- Validated via Zod on startup and on every UI-driven update; fail-fast with clear errors.
 - If a backend block has `enabled: false`, requests routed to it return 503 with a clear "backend disabled" message; the router does not auto-fall-back to a different backend.
-- `priority` resolves model-id collisions in the registry (e.g., if both LM Studio and Ollama report `llama-3.3-70b` loaded). Higher number wins; the loser is reachable via prefix syntax (`ollama/llama-3.3-70b`).
-- Env-var overrides: `CLAUDE_MCP_API_KEY`, `CLAUDE_MCP_ARCHIVE_DB_PATH`, plus per-backend `CLAUDE_MCP_<BACKEND>_ENABLED`, `CLAUDE_MCP_<BACKEND>_BASE_URL`, `CLAUDE_MCP_<BACKEND>_COMMAND` as applicable.
+- For multi-instance backends, `instances` must be a non-empty array when the backend block is enabled. Each instance must have a unique `name` within its backend.
+- `priority` resolves model-id collisions in the registry (e.g., if both LM Studio and Ollama report `llama-3.3-70b` loaded, or two LM Studio instances both report it). Higher number wins; the loser is reachable via fully-qualified prefix syntax (`lmstudio:work-server/llama-3.3-70b`).
+- Env-var overrides: `CLAUDE_MCP_API_KEY`, `CLAUDE_MCP_ARCHIVE_DB_PATH`, `CLAUDE_MCP_ADMIN_UI_ENABLED`, plus per-CLI-backend `CLAUDE_MCP_CLAUDE_COMMAND`, `CLAUDE_MCP_GEMINI_COMMAND`. Multi-instance HTTP backends are env-configured via JSON-encoded arrays (`CLAUDE_MCP_LMSTUDIO_INSTANCES='[{"name":"local","baseUrl":"..."}]'`) when CLI-style overrides would be too clumsy.
 - `configs/example.json` regenerated with a sibling `_comments` block per knob.
+- Config writes from the admin UI use atomic write-and-rename to `configs/default.json` (same discipline as the session store). In-flight requests retain their config snapshot; new requests see the updated values.
 
 ## Error policy
 
@@ -541,14 +621,20 @@ New JSONL fields (existing fields preserved for back-compat):
 - `auth.test.ts` — `x-api-key`, Bearer, `x-goog-api-key`, `?key=` query — all three shim error shapes.
 - `backends/claudeBackend.test.ts` — mock CLI events → `NormalizedEvent`s; `NormalizedRequest` → CLI argv. Capabilities reflect Claude.
 - `backends/geminiBackend.test.ts` — same, for Gemini CLI.
-- `backends/lmstudioBackend.test.ts` — mock HTTP server emits OpenAI SSE → `NormalizedEvent`s; `NormalizedRequest` → OpenAI request body. Honors sampling params. `embed()` round-trip.
-- `backends/ollamaBackend.test.ts` — mock HTTP server emits Ollama NDJSON → `NormalizedEvent`s; `NormalizedRequest` → Ollama `/api/chat` body. Tool calling normalization. `embed()` round-trip.
+- `backends/lmstudioBackend.test.ts` — mock HTTP server emits OpenAI SSE → `NormalizedEvent`s; `NormalizedRequest` → OpenAI request body. Honors sampling params. Multi-instance routing. `embed()` round-trip.
+- `backends/ollamaBackend.test.ts` — exercises both modes:
+  - OpenAI-compat mode: mock server emits OpenAI SSE.
+  - Native mode: mock server emits NDJSON; `NormalizedRequest` → `/api/chat` body with `options.*` nested sampling params, `keep_alive` honored, `format: "json"` when caller sets JSON mode.
+- `backends/openaiCompatClient.test.ts` — shared HTTP client behavior used by both LM Studio and Ollama (OpenAI-compat mode): SSE parsing, header forwarding, error mapping.
+- `backends/ollamaNativeClient.test.ts` — NDJSON streaming, `/api/tags` model discovery, `/api/embed` embeddings.
+- `admin/config.test.ts` — GET redacts apiKey, PUT replaces with Zod validation, PATCH merge-patches, atomic write, in-flight requests retain snapshot.
+- `admin/ui.test.ts` — localhost-bind enforcement, login → cookie issuance, cookie → subsequent auth, expired cookie → 401.
 - `anthropicShim/{requestTranslator,responseTranslator}.test.ts` — as before.
 - `geminiShim/{requestTranslator,responseTranslator}.test.ts` — as before.
 - `openaiShim/embeddings.test.ts` — backend-routing logic, prefix syntax, "model does not support embeddings" 400, legacyBackendUrl override path.
 - `capabilityGating.test.ts` — shim drops fields per backend capability; `capabilitiesDropped` field populated in log entry.
 
-**Integration (`tests/integration/`):** uses mock CLIs (`mock-claude`, `mock-gemini`) on PATH plus mock HTTP servers for LM Studio and Ollama (configured via `config.lmstudio.baseUrl`, `config.ollama.baseUrl`). Real SQLite, disk file store, real cache.
+**Integration (`tests/integration/`):** uses mock CLIs (`mock-claude`, `mock-gemini`) on PATH plus mock HTTP servers for LM Studio and Ollama (configured via single-instance `config.lmstudio.instances[0].baseUrl` / `config.ollama.instances[0].baseUrl`; multi-instance scenarios spin up additional mock servers). Real SQLite, disk file store, real cache.
 
 - `messages.integration.test.ts` — streaming + non-streaming on `/v1/messages`, with/without tools, with/without images, parameterized over all four backends.
 - `generateContent.integration.test.ts` — same matrix for Gemini shim endpoints.
@@ -561,6 +647,9 @@ New JSONL fields (existing fields preserved for back-compat):
 - `embeddings.integration.test.ts` — route to LM Studio for one model id, Ollama for another, 400 for a Claude-mapped model. Legacy override path covered separately.
 - `auth.integration.test.ts` — all three header schemes, all three shim error shapes.
 - `backendDisabled.integration.test.ts` — disable each backend in turn; requests routed there return 503; others still succeed.
+- `multiInstance.integration.test.ts` — two LM Studio mock servers + two Ollama mock servers with overlapping model ids; priority-based collision resolution; fully-qualified prefix routes to the loser; periodic reprobe picks up a model added to a previously-empty instance.
+- `ollamaNative.integration.test.ts` — same scenario set as `ollamaBackend.test.ts` but end-to-end through the server; verifies `useNativeApi: true` flag flips client correctly.
+- `adminUi.integration.test.ts` — localhost-bind enforcement, login flow, config GET/PUT/PATCH lifecycle, in-flight request snapshot semantics. Headless browser optional; HTTP-level test is sufficient.
 
 **Compatibility (`tests/compat/`) — new:**
 
@@ -598,8 +687,9 @@ The scope is large enough that the implementation plan will likely break into ph
 8. **LM Studio backend**: `lmstudioBackend.ts` HTTP client; `/v1/models` probe; chat completions and embeddings paths.
 9. **Ollama backend**: `ollamaBackend.ts` HTTP client; `/api/tags` probe; chat and embeddings paths via native API.
 10. **OpenAI shim multi-backend extension**: `chat/completions` dispatches any backend; `embeddings` routes via registry.
-11. **Admin endpoints**: `/admin/archive*`, `/admin/backends*`.
-12. **Compat tests**: all three SDKs × all four backends (full matrix).
+11. **Admin endpoints**: `/admin/archive*`, `/admin/backends*`, `/admin/config*`.
+12. **Admin UI**: vanilla HTML + Alpine.js SPA, login flow, dashboard, backend editor, router editor, archive viewer.
+13. **Compat tests**: all three SDKs × all four backends (full matrix).
 
 Phasing belongs in the implementation plan, not this spec.
 
@@ -616,5 +706,7 @@ Phasing belongs in the implementation plan, not this spec.
 - **Additional backends.** The `Backend` interface makes adding a fifth backend (xAI Grok via API key, vLLM, Together AI, etc.) a matter of writing one module. Out of scope here.
 - **Embeddings via Gemini.** Gemini does have `text-embedding-004`. Currently embedding is supported only on LM Studio and Ollama. Could be extended when the Gemini CLI exposes an embeddings subcommand.
 - **Per-model capability overrides.** Vision support and tool-calling support vary by *loaded model*, not just by backend. The current capability matrix is per-backend with a coarse "depends on model" caveat. A follow-up could probe each loaded local model's metadata for true per-model capability.
+- **Admin UI feature creep.** This spec ships a deliberately minimal UI: dashboard, backend editor, router editor, archive viewer. Out of scope but plausible future additions: log streaming over WebSocket, in-UI request replay, in-UI prompt playground, multi-user audit log, dark mode toggle. Layer on as needed.
+- **Admin UI frontend toolchain.** Decision to skip a build step ships a working UI fastest. If features grow past the comfort of vanilla Alpine.js, a future spec can introduce Vite + Svelte or similar — the JSON admin endpoints stay stable, so the frontend can be rewritten without touching the server.
 - **Archive search ergonomics.** Substring search via `LIKE`; FTS5 indexing if usage grows.
 - **Admin auth separation.** Admin endpoints currently share the single API key. A separate admin key may be warranted if exposed beyond localhost.
