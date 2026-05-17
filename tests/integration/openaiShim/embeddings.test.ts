@@ -10,6 +10,7 @@ import { BackendRegistry } from "../../../src/backends/registry.js";
 import { ClaudeBackend } from "../../../src/backends/claudeBackend.js";
 import { buildApp } from "../../../src/server.js";
 import type { Config } from "../../../src/config.js";
+import { ConfigSnapshotStore } from "../../../src/admin/configSnapshot.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..", "..", "..");
@@ -116,10 +117,15 @@ async function startServer(opts: {
 }): Promise<Live> {
   const config = makeConfig();
   const archive = new Archive(config.archive.dbPath);
+  const configSnapshot = new ConfigSnapshotStore({
+    initial: config,
+    path: join(config.files.dir, "..", "default.json")
+  });
   const app = buildApp({
     config,
     registry: opts.registry,
-    archive
+    archive,
+    configSnapshot
   } as never);
   const http = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve, reject) => {

@@ -10,7 +10,7 @@ const InstanceSchema = z.object({
   useNativeApi: z.boolean().nullable().default(null)
 });
 
-const ConfigSchema = z
+export const ConfigSchema = z
   .object({
     apiKey: z.string().min(1),
 

@@ -42,7 +42,8 @@ import { createGeminiModelsHandlers } from "./geminiShim/models.js";
 import { createChatCompletionsHandler } from "./openaiShim/chatCompletions.js";
 import { createEmbeddingsHandler } from "./openaiShim/embeddings.js";
 import { createOpenAIModelsHandlers } from "./openaiShim/models.js";
-import { createAdminArchiveHandlers } from "./admin/archive.js";
+import { ConfigSnapshotStore } from "./admin/configSnapshot.js";
+import { mountAdminRoutes } from "./admin/router.js";
 
 export interface ServerDeps {
   config: Config;
@@ -50,6 +51,7 @@ export interface ServerDeps {
   archive: Archive;
   fileStore: FileStore;
   responseCache: ResponseCache;
+  configSnapshot: ConfigSnapshotStore;
 }
 
 /**
@@ -219,14 +221,12 @@ export function buildApp(deps: ServerDeps): Express {
   app.get("/v1/models", openaiModelsHandlers.list);
   app.get("/v1/models/:id", openaiModelsHandlers.get);
 
-  // ---- Admin archive ---------------------------------------------------
-  const adminArchive = createAdminArchiveHandlers({
+  // ---- Admin routes (Plan 05 + Plan 11) -------------------------------
+  mountAdminRoutes(app, {
     archive: deps.archive,
-    config: { apiKey: deps.config.apiKey }
+    registry: deps.registry,
+    snapshot: deps.configSnapshot
   });
-  app.get("/admin/archive", adminArchive.list);
-  app.get("/admin/archive/search", adminArchive.search);
-  app.get("/admin/archive/:id", adminArchive.getById);
 
   return app;
 }
@@ -299,6 +299,7 @@ export interface RunningServer {
   fileStore: FileStore;
   responseCache: ResponseCache;
   config: Config;
+  configSnapshot: ConfigSnapshotStore;
   shutdown: () => Promise<void>;
 }
 
@@ -323,8 +324,19 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
     maxEntries: config.cache.maxEntries
   });
   const registry = buildRegistry(config);
+  const configSnapshot = new ConfigSnapshotStore({
+    initial: config,
+    path: opts.configPath
+  });
 
-  const app = buildApp({ config, registry, archive, fileStore, responseCache });
+  const app = buildApp({
+    config,
+    registry,
+    archive,
+    fileStore,
+    responseCache,
+    configSnapshot
+  });
   const port = opts.port ?? DEFAULT_PORT;
   const http = app.listen(port);
 
@@ -359,5 +371,15 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
 
   // eslint-disable-next-line no-console
   console.log(`ClaudeMCP listening on http://127.0.0.1:${port}`);
-  return { app, http, registry, archive, fileStore, responseCache, config, shutdown };
+  return {
+    app,
+    http,
+    registry,
+    archive,
+    fileStore,
+    responseCache,
+    config,
+    configSnapshot,
+    shutdown
+  };
 }

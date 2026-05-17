@@ -10,6 +10,7 @@ import { BackendRegistry } from "../../src/backends/registry.js";
 import { ClaudeBackend } from "../../src/backends/claudeBackend.js";
 import { buildApp } from "../../src/server.js";
 import type { Config } from "../../src/config.js";
+import { ConfigSnapshotStore } from "../../src/admin/configSnapshot.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..", "..");
@@ -119,7 +120,11 @@ async function startServer(): Promise<InProcessServer> {
   // Probe so the model map is populated for /v1/anthropic/models.
   await registry.probe();
 
-  const app = buildApp({ config, registry, archive });
+  const configSnapshot = new ConfigSnapshotStore({
+    initial: config,
+    path: join(workDir, "default.json")
+  });
+  const app = buildApp({ config, registry, archive, configSnapshot } as never);
   return { app, registry, archive, workDir };
 }
 
