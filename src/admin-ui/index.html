@@ -348,7 +348,99 @@
               </div>
             </template>
           </section>
-          <section x-show="activePanel === 'archive'"   x-data="archivePanel()"     x-init="init()"></section>
+          <section x-show="activePanel === 'archive'" x-data="archivePanel()" x-init="init()">
+            <div class="glass-card" style="padding: 16px;">
+              <div class="filters-bar">
+                <label>Backend
+                  <select x-model="filters.backend" @change="onFilterChange()">
+                    <option value="">all</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="lmstudio">lmstudio</option>
+                    <option value="ollama">ollama</option>
+                  </select>
+                </label>
+                <label>Session<input type="text" x-model="filters.session" @input.debounce.300ms="onFilterChange()"></label>
+                <label>Model<input type="text" x-model="filters.model" @input.debounce.300ms="onFilterChange()"></label>
+                <label>Since<input type="datetime-local" x-model="filters.since" @change="onFilterChange()"></label>
+                <label>Until<input type="datetime-local" x-model="filters.until" @change="onFilterChange()"></label>
+                <label>Status
+                  <select x-model="filters.status" @change="onFilterChange()">
+                    <option value="">any</option>
+                    <option value="ok">ok</option>
+                    <option value="error">error</option>
+                    <option value="timeout">timeout</option>
+                  </select>
+                </label>
+                <label>Search
+                  <div class="input-with-toggle">
+                    <span class="search-icon" x-html="ICONS.search"></span>
+                    <input type="search" placeholder="substring in request bodies" x-model="searchQuery" @input="onSearchInput()">
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div class="glass-card" style="padding: 0; margin-top: 16px; overflow: hidden;">
+              <template x-if="loading"><p class="muted" style="padding: 16px;">Loading…</p></template>
+              <template x-if="error"><p class="error" style="padding: 16px;" x-text="error"></p></template>
+              <table class="archive-table" x-show="!loading && rows.length > 0">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th><th>Backend</th><th>Model</th><th>Endpoint</th>
+                    <th>Session</th><th>Status</th><th>Tokens (in/out)</th><th>Dur</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="row in rows" :key="row.id">
+                    <tr @click="openDetail(row)">
+                      <td x-text="formatTime(row.timestamp)"></td>
+                      <td x-text="row.backend"></td>
+                      <td x-text="row.modelResolved || ''"></td>
+                      <td x-text="row.endpoint"></td>
+                      <td x-text="row.sessionId || ''"></td>
+                      <td x-text="row.status"></td>
+                      <td x-text="(row.inputTokens ?? '?') + '/' + (row.outputTokens ?? '?')"></td>
+                      <td x-text="(row.durationMs ?? '?') + 'ms'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+              <template x-if="!loading && rows.length === 0">
+                <p class="muted" style="padding: 16px;">No entries.</p>
+              </template>
+
+              <div class="pagination" style="padding: 12px;">
+                <button class="ghost" :disabled="page === 0" @click="prevPage()">Prev</button>
+                <span x-text="`Page ${page + 1}${hasMore ? '' : ' (last)'}`"></span>
+                <button class="ghost" :disabled="!hasMore" @click="nextPage()">Next</button>
+              </div>
+            </div>
+
+            <template x-if="detail || detailLoading">
+              <div class="modal-overlay" @click.self="closeDetail()">
+                <div class="modal glass-card">
+                  <header class="modal-header">
+                    <h2>Archive entry</h2>
+                    <button type="button" class="ghost" @click="closeDetail()">
+                      <span x-html="ICONS.close"></span>
+                    </button>
+                  </header>
+                  <template x-if="detailLoading"><p class="muted">Loading…</p></template>
+                  <template x-if="detail">
+                    <div>
+                      <h3>Metadata</h3>
+                      <pre x-text="prettyJSON({ id: detail.id, backend: detail.backend, model: detail.modelResolved, endpoint: detail.endpoint, sessionId: detail.sessionId, status: detail.status, durationMs: detail.durationMs, inputTokens: detail.inputTokens, outputTokens: detail.outputTokens, timestamp: detail.timestamp })"></pre>
+                      <h3>Request</h3>
+                      <pre x-text="prettyJSON(detail.requestBody)"></pre>
+                      <h3>Response</h3>
+                      <pre x-text="prettyJSON(detail.responseBody)"></pre>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </section>
         </main>
 
       </div>

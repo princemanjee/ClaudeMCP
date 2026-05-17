@@ -586,7 +586,97 @@ function generalPanel() {
     },
   };
 }
-function archivePanel()   { return { init() { /* see Task 14 */ } }; }
+function archivePanel() {
+  const PAGE_SIZE = 25;
+  return {
+    rows: [],
+    hasMore: false,
+    page: 0,
+    pageSize: PAGE_SIZE,
+    loading: false,
+    error: null,
+    // since/until are ISO-8601 datetime-local strings; convert to ISO before query.
+    filters: { backend: "", session: "", model: "", since: "", until: "", status: "" },
+    searchQuery: "",
+    detail: null,
+    detailLoading: false,
+    debouncedSearch: null,
+
+    init() {
+      this.debouncedSearch = debounce(() => { this.page = 0; this.reload(); }, 300);
+      this.reload();
+    },
+
+    async reload() {
+      this.loading = true;
+      this.error = null;
+      try {
+        const qs = new URLSearchParams();
+        if (this.filters.backend) qs.set("backend", this.filters.backend);
+        if (this.filters.session) qs.set("session", this.filters.session);
+        if (this.filters.model)   qs.set("model", this.filters.model);
+        if (this.filters.status)  qs.set("status", this.filters.status);
+        if (this.filters.since)   qs.set("since", isoFromDatetimeLocal(this.filters.since));
+        if (this.filters.until)   qs.set("until", isoFromDatetimeLocal(this.filters.until));
+        qs.set("limit", String(this.pageSize));
+        qs.set("offset", String(this.page * this.pageSize));
+        let path;
+        if (this.searchQuery) {
+          // /admin/archive/search requires q; only limit/offset are honored.
+          const sqs = new URLSearchParams();
+          sqs.set("q", this.searchQuery);
+          sqs.set("limit", String(this.pageSize));
+          sqs.set("offset", String(this.page * this.pageSize));
+          path = "/admin/archive/search?" + sqs.toString();
+        } else {
+          path = "/admin/archive?" + qs.toString();
+        }
+        const res = await adminFetch(path);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        this.rows = Array.isArray(body.data) ? body.data : [];
+        this.hasMore = body.has_more === true;
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async openDetail(row) {
+      this.detail = null;
+      this.detailLoading = true;
+      try {
+        const res = await adminFetch(`/admin/archive/${encodeURIComponent(row.id)}`);
+        this.detail = await res.json();
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        this.detailLoading = false;
+      }
+    },
+    closeDetail() { this.detail = null; },
+
+    onFilterChange() { this.page = 0; this.reload(); },
+    onSearchInput() { this.debouncedSearch(); },
+
+    prevPage() { if (this.page > 0) { this.page--; this.reload(); } },
+    nextPage() { if (this.hasMore) { this.page++; this.reload(); } },
+
+    formatTime(ts) { return ts ? new Date(ts).toLocaleString() : "—"; },
+    prettyJSON(v) {
+      try { return JSON.stringify(v, null, 2); } catch (_e) { return String(v); }
+    },
+  };
+}
+
+/** Convert an HTML <input type="datetime-local"> value to an ISO string. */
+function isoFromDatetimeLocal(s) {
+  if (!s) return "";
+  // The native value is local-time, no zone. Treat it as local and convert to ISO.
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : "";
+}
 
 // Expose globally so Alpine's x-data attributes can resolve them without imports.
 window.app = app;
