@@ -48,7 +48,13 @@ if (prompt.includes("MOCK_ERROR")) {
 }
 
 if (prompt.includes("MOCK_SLEEP_FOREVER")) {
-  await new Promise(() => {}); // never resolves
+  // Use a timer-based approach to keep the event loop alive. A bare
+  // `await new Promise(() => {})` triggers Node's "unsettled top-level await"
+  // detection and the process exits with code 13 within milliseconds,
+  // defeating the timeout-test scenario.
+  await new Promise((_resolve) => {
+    setInterval(() => {}, 1_000_000);
+  });
 }
 
 if (prompt.includes("MOCK_INVALID_JSON")) {
