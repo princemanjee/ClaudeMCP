@@ -155,8 +155,32 @@ export class ClaudeBackend implements Backend {
             if (block.text.length === 0) continue;
             yield { kind: "text_delta", index: textIndex, text: block.text };
             textOpen = true;
+          } else if (
+            block.type === "tool_use" &&
+            typeof block.id === "string" &&
+            typeof block.name === "string"
+          ) {
+            // Close any open text block first so tool_use claims a fresh index.
+            if (textOpen) {
+              textIndex++;
+              textOpen = false;
+            }
+            const useIndex = textIndex;
+            textIndex++;
+            yield {
+              kind: "tool_use_start",
+              index: useIndex,
+              id: block.id,
+              name: block.name
+            };
+            yield {
+              kind: "tool_use_delta",
+              index: useIndex,
+              partialJson: JSON.stringify(block.input ?? {})
+            };
+            yield { kind: "tool_use_stop", index: useIndex };
+            stopReason = "tool_use";
           }
-          // tool_use blocks: Task 6 wires the start/delta/stop emission here.
         }
         continue;
       }

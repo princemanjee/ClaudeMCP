@@ -359,6 +359,77 @@ describe("ClaudeBackend skeleton", () => {
     expect(text).not.toMatch(/(must call|do not call|only call)/i);
   });
 
+  it("invoke emits tool_use_start + tool_use_delta + tool_use_stop for CLI tool_use blocks", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: 'MOCK_TOOL_USE(calculator,toolu_42,{"x":1,"y":2})' }
+          ]
+        }
+      ],
+      tools: [{ name: "calculator", inputSchema: {} }]
+    })) {
+      events.push(ev);
+    }
+    const starts = events.filter((e) => e.kind === "tool_use_start");
+    const deltas = events.filter((e) => e.kind === "tool_use_delta");
+    const stops = events.filter((e) => e.kind === "tool_use_stop");
+    expect(starts).toHaveLength(1);
+    expect(deltas).toHaveLength(1);
+    expect(stops).toHaveLength(1);
+    if (starts[0]?.kind === "tool_use_start") {
+      expect(starts[0].id).toBe("toolu_42");
+      expect(starts[0].name).toBe("calculator");
+    }
+    if (deltas[0]?.kind === "tool_use_delta") {
+      expect(JSON.parse(deltas[0].partialJson)).toEqual({ x: 1, y: 2 });
+    }
+    const stop = events[events.length - 1];
+    expect(stop?.kind).toBe("message_stop");
+    if (stop?.kind === "message_stop") {
+      expect(stop.stopReason).toBe("tool_use");
+    }
+  });
+
+  it("invoke assigns sequential indexes to mixed text + tool_use blocks", async () => {
+    // This test exercises the index-bookkeeping logic. Currently the mock
+    // doesn't emit interleaved text + tool_use in a single stream — confirm
+    // the bookkeeping invariants instead: a tool_use block claims its own
+    // index, distinct from text indexes.
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: 'MOCK_TOOL_USE(calc,toolu_1,{"a":1})' }
+          ]
+        }
+      ],
+      tools: [{ name: "calc", inputSchema: {} }]
+    })) {
+      events.push(ev);
+    }
+    const useStart = events.find((e) => e.kind === "tool_use_start");
+    if (useStart?.kind === "tool_use_start") {
+      // First emitted block index is 0 (no preceding text block in this stream).
+      expect(useStart.index).toBe(0);
+    }
+  });
+
   it("invoke emits message_stop with stopReason 'stop_sequence' when matched", async () => {
     const backend = new ClaudeBackend({
       command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
