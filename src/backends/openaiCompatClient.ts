@@ -101,6 +101,127 @@ export class OpenAICompatClient {
     return raw?.data ?? [];
   }
 
-  // Methods chatCompletions, chatCompletionsBuffered, embeddings land in
-  // subsequent tasks.
+  /**
+   * Buffered (non-streaming) chat completion. The body's `stream` field is
+   * forced to false regardless of caller input — use `chatCompletions()` for
+   * streaming.
+   */
+  async chatCompletionsBuffered(body: unknown): Promise<unknown> {
+    const merged = { ...(body as Record<string, unknown>), stream: false };
+    return this.fetchJson("/chat/completions", {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(merged)
+    });
+  }
+
+  /**
+   * Streaming chat completion. Yields one parsed JSON object per SSE event,
+   * silently dropping `[DONE]` and any event that fails to JSON-parse. Throws
+   * `OpenAICompatHTTPError` if the initial response is non-2xx (before any
+   * events are yielded). Throws `OpenAICompatTimeoutError` if the timeout
+   * fires mid-stream.
+   */
+  async *chatCompletions(body: unknown): AsyncIterable<unknown> {
+    const merged = { ...(body as Record<string, unknown>), stream: true };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: this.headers({ Accept: "text/event-stream" }),
+        body: JSON.stringify(merged),
+        signal: controller.signal
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      if ((e as { name?: string }).name === "AbortError") {
+        throw new OpenAICompatTimeoutError(
+          `chat completion stream to ${this.baseUrl} timed out`
+        );
+      }
+      throw e;
+    }
+
+    if (!response.ok) {
+      clearTimeout(timer);
+      const text = await response.text();
+      let body: unknown = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        // text body
+      }
+      throw new OpenAICompatHTTPError(
+        `HTTP ${response.status} from chat completions`,
+        response.status,
+        body
+      );
+    }
+
+    if (!response.body) {
+      clearTimeout(timer);
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Split on double-newline event boundaries.
+        let boundary = buffer.indexOf("\n\n");
+        while (boundary !== -1) {
+          const eventChunk = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+
+          // Each event chunk is one or more `field: value` lines. We care
+          // only about `data: ` lines.
+          for (const line of eventChunk.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice("data: ".length);
+            if (payload === "[DONE]") {
+              // Terminator — drain remaining buffer and exit.
+              return;
+            }
+            try {
+              yield JSON.parse(payload);
+            } catch {
+              // skip malformed event
+            }
+          }
+
+          boundary = buffer.indexOf("\n\n");
+        }
+      }
+      // Process trailing buffer (rare — most servers always end with \n\n).
+      const trailing = buffer.trim();
+      if (trailing.startsWith("data: ")) {
+        const payload = trailing.slice("data: ".length);
+        if (payload !== "[DONE]") {
+          try {
+            yield JSON.parse(payload);
+          } catch {
+            // skip
+          }
+        }
+      }
+    } catch (e) {
+      if ((e as { name?: string }).name === "AbortError") {
+        throw new OpenAICompatTimeoutError(
+          `chat completion stream to ${this.baseUrl} timed out`
+        );
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
