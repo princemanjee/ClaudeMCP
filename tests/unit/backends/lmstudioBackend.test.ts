@@ -309,11 +309,55 @@ describe("LMStudioBackend skeleton", () => {
     }).rejects.toThrow(/thinking/i);
   });
 
-  it("embed throws — lands in Task 7", async () => {
+  it("embed round-trips a single input", async () => {
     const b = await makeBackend();
+    const resp = await b.embed!({
+      model: "nomic-embed-text",
+      input: ["hello"]
+    });
+    expect(resp.model).toBe("nomic-embed-text");
+    expect(resp.embeddings).toHaveLength(1);
+    expect(resp.embeddings[0]).toHaveLength(4);
+  });
+
+  it("embed round-trips multiple inputs preserving order", async () => {
+    const b = await makeBackend();
+    const resp = await b.embed!({
+      model: "nomic-embed-text",
+      input: ["alpha", "beta", "gamma"]
+    });
+    expect(resp.embeddings).toHaveLength(3);
+    // The mock's vectors are keyed off input length / 10 in slot 0.
+    expect(resp.embeddings[0]?.[0]).toBeCloseTo(0.5);
+    expect(resp.embeddings[1]?.[0]).toBeCloseTo(0.4);
+    expect(resp.embeddings[2]?.[0]).toBeCloseTo(0.5);
+  });
+
+  it("embed surfaces server errors via the OpenAICompatHTTPError", async () => {
+    await handle?.close();
+    handle = await startMockLmStudio({
+      models: ["nomic-embed-text"],
+      failEmbeddings: true
+    });
+    const b = new LMStudioBackend({
+      enabled: true,
+      instances: [
+        {
+          name: "local",
+          baseUrl: handle.url,
+          apiKey: "",
+          priority: 50,
+          timeoutMs: 5000,
+          useNativeApi: null
+        }
+      ]
+    });
+    // Probe so the embed model is in lastModels (else fallback would still hit
+    // this instance — verifying error path either way).
+    await b.listModels();
     await expect(
-      b.embed!({ model: "nomic-embed-text", input: ["hello"] })
-    ).rejects.toThrow(/embed/);
+      b.embed!({ model: "nomic-embed-text", input: ["hi"] })
+    ).rejects.toThrow();
   });
 
   it("rejects an empty instances[] in the constructor", () => {

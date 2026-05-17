@@ -430,9 +430,25 @@ export class LMStudioBackend implements Backend {
   }
 
   async embed(
-    _req: NormalizedEmbeddingRequest
+    req: NormalizedEmbeddingRequest
   ): Promise<NormalizedEmbeddingResponse> {
-    throw new Error("LMStudioBackend.embed() lands in Plan 08 Task 7");
+    const { instance, modelId } = this.resolveInstanceAndModel(req.model);
+    const raw = (await instance.client.embeddings({
+      model: modelId,
+      input: req.input
+    })) as {
+      model?: string;
+      data?: Array<{ embedding?: number[]; index?: number }>;
+    };
+    // Sort by `index` defensively — most servers return in order, but the
+    // spec allows reordering.
+    const items = [...(raw.data ?? [])].sort(
+      (a, b) => (a.index ?? 0) - (b.index ?? 0)
+    );
+    return {
+      model: raw.model ?? modelId,
+      embeddings: items.map((d) => d.embedding ?? [])
+    };
   }
 }
 
