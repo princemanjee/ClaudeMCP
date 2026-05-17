@@ -28,7 +28,7 @@ This design closes those gaps to the extent feasible while preserving the origin
 - Unify embeddings under the backend system: route `/v1/embeddings` through whichever backend serves the requested embedding model (typically LM Studio or Ollama). The standalone embeddings-proxy concept is retired.
 - Implement local equivalents for features without a backend path: persistent Files API (disk-backed content cache, shared across all backends via content addressing), token counting (backend-aware estimator), response cache (reinterpreted `cache_control`).
 - Add a durable request/response archive (SQLite) capturing every call across all backends, for retrospective review and opt-in exact-match reuse.
-- Add a localhost-only web admin UI for live backend status, model discovery, and config editing. Uses vanilla HTML + Alpine.js served from the same Node process — no build step.
+- Add a localhost-only web admin UI for live backend status, model discovery, and config editing. Vanilla HTML + Alpine.js + custom CSS served from the same Node process — no build step. Visual style is glassmorphism (translucent blurred-glass surfaces over a colorful gradient background) with light and dark themes.
 - Preserve the existing OpenAI chat-completions pipeline behavior — no regressions for current Agent Zero usage.
 
 ## Non-goals
@@ -123,9 +123,12 @@ ClaudeMCP/
 │   │   └── ui.ts                    # /admin/ui — serves static index.html + Alpine.js app
 │   ├── admin-ui/                    # NEW — vanilla static assets, no build step
 │   │   ├── index.html               # single-page app entry
-│   │   ├── app.js                   # Alpine.js components
-│   │   ├── styles.css               # minimal CSS (Pico.css starter)
-│   │   └── icons/                   # backend logos, status indicators
+│   │   ├── app.js                   # Alpine.js components, theme toggle, polling
+│   │   ├── styles.css               # custom glassmorphism CSS, ~400-500 LOC
+│   │   ├── themes/                  # theme definitions (CSS custom properties)
+│   │   │   ├── light.css            # pastel gradient background, white-tinted glass
+│   │   │   └── dark.css             # deep gradient background, dark-tinted glass
+│   │   └── icons/                   # inline SVG icons (backends, status, theme toggle)
 │   └── tools/                       # existing MCP tools, unchanged
 ├── configs/
 │   ├── default.json                 # extended
@@ -412,7 +415,7 @@ Best-effort enforcement — the model usually honors but is not guaranteed.
 
 ## Admin UI (`src/admin/ui.ts` + `src/admin-ui/`)
 
-A single-page web admin served from the same Node process. Vanilla HTML + Alpine.js + Pico.css — no build step, no React, no bundler. Adds one runtime dep (Alpine via CDN-pinned ESM import) and ships ~500 LOC of frontend.
+A single-page web admin served from the same Node process. Vanilla HTML + Alpine.js + hand-rolled CSS — no build step, no React, no bundler. Visual style is glassmorphism (frosted-glass cards over a colorful gradient background, soft borders, floating layout) with light and dark themes. Adds one runtime dep (Alpine via CDN-pinned ESM import) and ships ~1000 LOC of HTML+CSS+JS.
 
 **Pages / sections** (single SPA, tab-switched):
 
@@ -448,6 +451,53 @@ A single-page web admin served from the same Node process. Vanilla HTML + Alpine
 - On success, the UI re-fetches `/admin/config` and rerenders.
 
 **No build step rationale:** Alpine.js (~13 KB minified) is loaded via a pinned CDN URL with SRI. Vanilla HTML/CSS/JS files live in `src/admin-ui/` and are served as static assets. Zero npm-side frontend toolchain (no Vite, Webpack, TypeScript-for-frontend, JSX). This keeps the project deployable as a single `node dist/server.js` invocation with no preceding `npm run build` of a UI.
+
+### Visual design — glassmorphism + light/dark themes
+
+**Aesthetic** (referenced against the user-supplied examples): translucent frosted-glass cards floating over a colorful gradient background, soft 1px borders with low-opacity white/black, generous border-radius (16-24px), soft drop shadows, vibrant accent colors. Reads as modern, premium, slightly playful.
+
+**Theme system:**
+
+- **Light theme** (default): pastel gradient background — diagonal lavender → soft pink → pale cyan. Glass surfaces use white at 12-18% opacity with `backdrop-filter: blur(20px) saturate(140%)`. 1px white-at-30% borders. Body text near-black (`#1a1a2e`); muted text mid-grey. Accent: vibrant magenta + cyan for primary actions and status highlights.
+- **Dark theme**: deep gradient — indigo → violet → near-black. Glass surfaces use white at 6-10% opacity over the dark base (renders as smoky translucent panels) with same blur+saturate filter. 1px white-at-15% borders. Body text near-white; muted text light-grey. Accent: same magenta + cyan, slightly desaturated to avoid eye strain on dark.
+- **Theme toggle**: pill-shaped switch in top-right of the top bar (sun / moon icons). Preference persisted in `localStorage` under `claudemcp-theme`. First-visit default honors `prefers-color-scheme: dark`.
+
+**Surface treatments:**
+
+- **Cards**: `backdrop-filter: blur(20px) saturate(140%)`, semi-transparent fill per theme, 1px translucent border, soft multi-layer drop shadow, 20px border-radius. Hover state lifts the card slightly (transform + shadow intensification).
+- **Buttons**: smaller blur (10px), thicker glass for primary actions, hover state brightens and lifts. Primary buttons use accent-color gradient fill; secondary buttons use plain glass.
+- **Inputs**: glass background, inset shadow on focus, accent-colored ring. No hard borders.
+- **Modals**: full-viewport dimmed overlay with the modal as a larger glass panel (blur 30px).
+- **Status pills**: small glass capsules with colored dot (green=healthy, yellow=degraded, red=unreachable) and label.
+
+**Layout:**
+
+- Left sidebar (240px desktop, collapsed to icon rail under 1024px, hamburger drawer under 768px) with section icons + labels. Sidebar itself is a glass panel.
+- Sticky top bar with the logo, current page title, theme toggle, and backend health summary (one status pill per backend).
+- Main content scrolls under the top bar; cards arranged in CSS Grid with auto-fit columns at 360px minimum width.
+
+**Background:**
+
+- Fixed-position SVG gradient that fills the viewport. Subtle animated drift (slow `transform: translate` keyframes, 60s loop) for liveness. `prefers-reduced-motion` disables the drift.
+- Optional decorative blurred shapes (large circles, low opacity, behind everything) for depth.
+
+**CSS architecture:**
+
+- `styles.css` — base reset, layout, surface treatments, components, all keyed off CSS custom properties (`--glass-bg`, `--glass-border`, `--glass-blur`, `--accent`, `--accent-secondary`, `--text-primary`, `--text-muted`, `--bg-gradient-start/mid/end`, etc.).
+- `themes/light.css` and `themes/dark.css` — define the custom-property values. Loading the appropriate file is done by adding `<link rel="stylesheet">` dynamically based on theme state, OR by including both with `[data-theme="light"]` / `[data-theme="dark"]` attribute selectors on `<html>` (preferred — avoids flash-of-unstyled-content).
+
+**Accessibility:**
+
+- Contrast: every text/background pair tested against WCAG AA at the worst-case point on the gradient. If a card sits over a low-contrast region of the gradient, the glass tint compensates (deeper translucency).
+- Focus rings: 2px accent-colored ring with 2px offset, always visible against any background.
+- `prefers-reduced-motion`: disables gradient drift, card hover-lift animation, theme transition.
+- Glass blur fallback: if `backdrop-filter` isn't supported, fall back to a higher-opacity solid color per theme so the layout remains usable.
+
+**Icons:**
+
+- Inline SVG only (no icon font, no external image requests beyond the Alpine.js CDN). Set lives in `src/admin-ui/icons/` and is imported into `app.js` as ES module string exports.
+- Backend logos: small monochromatic SVG marks per backend, colored by accent.
+- Status, theme, navigation, action icons: a small consistent set (~20 icons total).
 
 ## Auth (`auth.ts`)
 
@@ -650,6 +700,7 @@ New JSONL fields (existing fields preserved for back-compat):
 - `multiInstance.integration.test.ts` — two LM Studio mock servers + two Ollama mock servers with overlapping model ids; priority-based collision resolution; fully-qualified prefix routes to the loser; periodic reprobe picks up a model added to a previously-empty instance.
 - `ollamaNative.integration.test.ts` — same scenario set as `ollamaBackend.test.ts` but end-to-end through the server; verifies `useNativeApi: true` flag flips client correctly.
 - `adminUi.integration.test.ts` — localhost-bind enforcement, login flow, config GET/PUT/PATCH lifecycle, in-flight request snapshot semantics. Headless browser optional; HTTP-level test is sufficient.
+- `adminUi.visual.test.ts` (optional, manual) — Playwright snapshot tests for the glassmorphism UI in both themes. Compares against committed baseline screenshots. Skipped in CI by default since visual diffs are noisy; runnable on demand via `npm run test:visual` for manual design verification before releases.
 
 **Compatibility (`tests/compat/`) — new:**
 
@@ -688,7 +739,7 @@ The scope is large enough that the implementation plan will likely break into ph
 9. **Ollama backend**: `ollamaBackend.ts` HTTP client; `/api/tags` probe; chat and embeddings paths via native API.
 10. **OpenAI shim multi-backend extension**: `chat/completions` dispatches any backend; `embeddings` routes via registry.
 11. **Admin endpoints**: `/admin/archive*`, `/admin/backends*`, `/admin/config*`.
-12. **Admin UI**: vanilla HTML + Alpine.js SPA, login flow, dashboard, backend editor, router editor, archive viewer.
+12. **Admin UI**: vanilla HTML + Alpine.js SPA with glassmorphism CSS, light/dark themes, login flow, dashboard, backend editor, router editor, archive viewer.
 13. **Compat tests**: all three SDKs × all four backends (full matrix).
 
 Phasing belongs in the implementation plan, not this spec.
@@ -706,7 +757,8 @@ Phasing belongs in the implementation plan, not this spec.
 - **Additional backends.** The `Backend` interface makes adding a fifth backend (xAI Grok via API key, vLLM, Together AI, etc.) a matter of writing one module. Out of scope here.
 - **Embeddings via Gemini.** Gemini does have `text-embedding-004`. Currently embedding is supported only on LM Studio and Ollama. Could be extended when the Gemini CLI exposes an embeddings subcommand.
 - **Per-model capability overrides.** Vision support and tool-calling support vary by *loaded model*, not just by backend. The current capability matrix is per-backend with a coarse "depends on model" caveat. A follow-up could probe each loaded local model's metadata for true per-model capability.
-- **Admin UI feature creep.** This spec ships a deliberately minimal UI: dashboard, backend editor, router editor, archive viewer. Out of scope but plausible future additions: log streaming over WebSocket, in-UI request replay, in-UI prompt playground, multi-user audit log, dark mode toggle. Layer on as needed.
-- **Admin UI frontend toolchain.** Decision to skip a build step ships a working UI fastest. If features grow past the comfort of vanilla Alpine.js, a future spec can introduce Vite + Svelte or similar — the JSON admin endpoints stay stable, so the frontend can be rewritten without touching the server.
+- **Admin UI feature creep.** This spec ships a deliberately minimal UI: dashboard, backend editor, router editor, archive viewer. Out of scope but plausible future additions: log streaming over WebSocket, in-UI request replay, in-UI prompt playground, multi-user audit log, theme customization beyond light/dark, more accent palettes. Layer on as needed.
+- **Admin UI frontend toolchain.** Decision to skip a build step ships a working UI fastest. If features grow past the comfort of vanilla Alpine.js + hand-rolled CSS, a future spec can introduce Vite + Svelte or similar — the JSON admin endpoints stay stable, so the frontend can be rewritten without touching the server.
+- **Glassmorphism browser support.** `backdrop-filter` is supported by all current evergreen browsers (Chrome, Edge, Firefox 103+, Safari 16+). A static-color fallback is specified above for older browsers; if support degrades meaningfully, the fallback layer can be elevated to a CSS-only theme variant.
 - **Archive search ergonomics.** Substring search via `LIKE`; FTS5 indexing if usage grows.
 - **Admin auth separation.** Admin endpoints currently share the single API key. A separate admin key may be warranted if exposed beyond localhost.
