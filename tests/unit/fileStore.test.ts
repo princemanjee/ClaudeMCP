@@ -248,3 +248,68 @@ describe("FileStore — eviction", () => {
     store.stop();
   });
 });
+
+describe("FileStore — cross-format ID resolution", () => {
+  let dir: string;
+  let store: FileStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudemcp-fs-xfmt-"));
+    store = new FileStore({
+      dir,
+      ttlMs: 24 * 60 * 60 * 1000,
+      maxTotalBytes: 10 * 1024 * 1024,
+      sweepIntervalMs: 0
+    });
+  });
+
+  afterEach(() => {
+    store.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("resolveById accepts the Anthropic format (file_<24hex>)", async () => {
+    const meta = await store.upload(Buffer.from("hello"), "h.txt", "text/plain");
+    const { metadata, bytes } = await store.resolveById(meta.id);
+    expect(metadata.id).toBe(meta.id);
+    expect(bytes.toString("utf8")).toBe("hello");
+  });
+
+  it("resolveById accepts the Gemini format (files/<24hex>) and resolves to the same content", async () => {
+    const meta = await store.upload(Buffer.from("hello"), "h.txt", "text/plain");
+    const hash = meta.id.slice("file_".length);
+    const geminiId = `files/${hash}`;
+    const { metadata, bytes } = await store.resolveById(geminiId);
+    expect(metadata.id).toBe(meta.id);
+    expect(bytes.toString("utf8")).toBe("hello");
+  });
+
+  it("resolveById throws FileNotFoundError on a well-formed ID with no backing content", async () => {
+    await expect(store.resolveById("files/aaaaaaaaaaaaaaaaaaaaaaaa")).rejects.toBeInstanceOf(
+      FileNotFoundError
+    );
+    await expect(store.resolveById("file_aaaaaaaaaaaaaaaaaaaaaaaa")).rejects.toBeInstanceOf(
+      FileNotFoundError
+    );
+  });
+
+  it("resolveById throws FileNotFoundError on malformed IDs", async () => {
+    await expect(store.resolveById("not-an-id")).rejects.toBeInstanceOf(FileNotFoundError);
+    await expect(store.resolveById("")).rejects.toBeInstanceOf(FileNotFoundError);
+    await expect(store.resolveById("files/")).rejects.toBeInstanceOf(FileNotFoundError);
+    await expect(store.resolveById("file_")).rejects.toBeInstanceOf(FileNotFoundError);
+    await expect(store.resolveById("file_aaaaaaaaaaaaaaaaaaaaaaa")).rejects.toBeInstanceOf(
+      FileNotFoundError
+    );
+  });
+
+  it("resolveForInline still works with either format (delegates through resolveById)", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG magic
+    const meta = await store.upload(png, "a.png", "image/png");
+    const hash = meta.id.slice("file_".length);
+
+    const blockA = await store.resolveForInline(meta.id, "image");
+    const blockB = await store.resolveForInline(`files/${hash}`, "image");
+    expect(blockA).toEqual(blockB);
+  });
+});
