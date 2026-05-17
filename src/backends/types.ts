@@ -14,10 +14,13 @@ export interface BackendCapabilities {
 
 // ---- Normalized request shape --------------------------------------------
 
-export type NormalizedRole = "system" | "user" | "assistant" | "tool";
+export type NormalizedRole = "user" | "assistant" | "tool";
 
+// Content blocks use `type` as discriminant to match the Anthropic Messages API
+// shape so translators can spread blocks through without renaming.
 export type NormalizedContentBlock =
   | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
   | { type: "image"; mediaType: string; data: string /* base64 */ }
   | { type: "document"; mediaType: string; data: string /* base64 */ }
   | { type: "tool_use"; id: string; name: string; input: unknown }
@@ -61,9 +64,13 @@ export interface NormalizedRequest {
 
 // ---- Normalized streaming event union ------------------------------------
 
+// Stream events use `kind` (not `type`) to avoid collision with `Event.type`
+// in browser/DOM ambient typings and to differentiate from content-block types
+// at the call site.
 export type NormalizedEvent =
   | { kind: "message_start"; model: string }
   | { kind: "text_delta"; index: number; text: string }
+  | { kind: "thinking_delta"; index: number; text: string }
   | { kind: "tool_use_start"; index: number; id: string; name: string }
   | { kind: "tool_use_delta"; index: number; partialJson: string }
   | { kind: "tool_use_stop"; index: number }
