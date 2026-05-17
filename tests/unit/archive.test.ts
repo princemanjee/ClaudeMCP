@@ -220,3 +220,119 @@ describe("Archive.recordEntry — typed writer", () => {
     }
   });
 });
+
+describe("Archive — query + prune", () => {
+  let dir: string;
+  let dbPath: string;
+  let archive: Archive;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudemcp-arc-q-"));
+    dbPath = join(dir, "archive.sqlite");
+    archive = new Archive(dbPath);
+  });
+
+  afterEach(() => {
+    archive.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function seed(): { ids: number[] } {
+    const ids: number[] = [];
+    ids.push(
+      archive.recordEntry({
+        requestHash: "a".repeat(64),
+        logId: "log_a",
+        endpoint: "/v1/messages",
+        backend: "claude",
+        modelResolved: "claude-sonnet-4-6",
+        sessionId: "s_one",
+        timestamp: "2026-05-10T00:00:00Z",
+        status: "ok",
+        durationMs: 100,
+        inputTokens: 1,
+        outputTokens: 1,
+        requestBody: { messages: [{ role: "user", content: "hello world" }] },
+        responseBody: { id: "msg_a" }
+      })
+    );
+    ids.push(
+      archive.recordEntry({
+        requestHash: "b".repeat(64),
+        logId: "log_b",
+        endpoint: "/v1/messages",
+        backend: "gemini",
+        modelResolved: "gemini-pro",
+        sessionId: "s_two",
+        timestamp: "2026-05-15T00:00:00Z",
+        status: "ok",
+        durationMs: 200,
+        inputTokens: 2,
+        outputTokens: 2,
+        requestBody: { messages: [{ role: "user", content: "another prompt" }] },
+        responseBody: { id: "msg_b" }
+      })
+    );
+    return { ids };
+  }
+
+  it("list() returns entries with pagination, newest first", () => {
+    seed();
+    const page = archive.list({ limit: 10, offset: 0 });
+    expect(page.data.map((e) => e.logId)).toEqual(["log_b", "log_a"]);
+    expect(page.has_more).toBe(false);
+  });
+
+  it("list() filters by backend", () => {
+    seed();
+    const onlyGemini = archive.list({ limit: 10, offset: 0, backend: "gemini" });
+    expect(onlyGemini.data.map((e) => e.logId)).toEqual(["log_b"]);
+  });
+
+  it("list() filters by session", () => {
+    seed();
+    const sOne = archive.list({ limit: 10, offset: 0, sessionId: "s_one" });
+    expect(sOne.data.map((e) => e.logId)).toEqual(["log_a"]);
+  });
+
+  it("list() filters by since / until", () => {
+    seed();
+    const recent = archive.list({
+      limit: 10,
+      offset: 0,
+      since: "2026-05-12T00:00:00Z"
+    });
+    expect(recent.data.map((e) => e.logId)).toEqual(["log_b"]);
+    const old = archive.list({ limit: 10, offset: 0, until: "2026-05-12T00:00:00Z" });
+    expect(old.data.map((e) => e.logId)).toEqual(["log_a"]);
+  });
+
+  it("searchText() finds substring hits in the decompressed request body", () => {
+    seed();
+    const hits = archive.searchText("hello world", { limit: 10, offset: 0 });
+    expect(hits.data.map((e) => e.logId)).toEqual(["log_a"]);
+  });
+
+  it("searchText() returns empty page when no hits", () => {
+    seed();
+    const hits = archive.searchText("nothing-matches", { limit: 10, offset: 0 });
+    expect(hits.data).toEqual([]);
+    expect(hits.has_more).toBe(false);
+  });
+
+  it("deleteOlderThan() drops entries with timestamp < cutoff", () => {
+    seed();
+    const removed = archive.deleteOlderThan("2026-05-12T00:00:00Z");
+    expect(removed).toBe(1);
+    const remaining = archive.list({ limit: 10, offset: 0 });
+    expect(remaining.data.map((e) => e.logId)).toEqual(["log_b"]);
+  });
+
+  it("deleteBySession() drops entries matching the session id", () => {
+    seed();
+    const removed = archive.deleteBySession("s_one");
+    expect(removed).toBe(1);
+    const remaining = archive.list({ limit: 10, offset: 0 });
+    expect(remaining.data.map((e) => e.logId)).toEqual(["log_b"]);
+  });
+});

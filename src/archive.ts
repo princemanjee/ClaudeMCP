@@ -164,6 +164,90 @@ export class Archive {
     return this.hydrateRow(row);
   }
 
+  list(filters: ArchiveListFilters): ArchivePage {
+    const where: string[] = [];
+    const params: Record<string, unknown> = {};
+    if (filters.backend) {
+      where.push("backend = @backend");
+      params.backend = filters.backend;
+    }
+    if (filters.sessionId) {
+      where.push("session_id = @sessionId");
+      params.sessionId = filters.sessionId;
+    }
+    if (filters.model) {
+      where.push("model_resolved = @model");
+      params.model = filters.model;
+    }
+    if (filters.status) {
+      where.push("status = @status");
+      params.status = filters.status;
+    }
+    if (filters.since) {
+      where.push("timestamp >= @since");
+      params.since = filters.since;
+    }
+    if (filters.until) {
+      where.push("timestamp < @until");
+      params.until = filters.until;
+    }
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    // Over-fetch by one to compute has_more without a separate COUNT.
+    const stmt = this.db.prepare(
+      `SELECT * FROM entries ${whereClause} ORDER BY timestamp DESC LIMIT @limitPlusOne OFFSET @offset`
+    );
+    const rows = stmt.all({
+      ...params,
+      limitPlusOne: filters.limit + 1,
+      offset: filters.offset
+    }) as RawEntryRow[];
+
+    const has_more = rows.length > filters.limit;
+    const trimmed = has_more ? rows.slice(0, filters.limit) : rows;
+    return {
+      data: trimmed.map((r) => this.hydrateRow(r)),
+      has_more
+    };
+  }
+
+  searchText(
+    needle: string,
+    paging: { limit: number; offset: number }
+  ): ArchivePage {
+    // Decompress on read; for large archives we may need a content index in
+    // a later plan. The spec's open question on FTS5 is deferred — for now
+    // we scan, decompress, and filter in memory.
+    const all = this.db
+      .prepare("SELECT * FROM entries ORDER BY timestamp DESC")
+      .all() as RawEntryRow[];
+    const hits: StoredArchiveEntry[] = [];
+    for (const row of all) {
+      const decoded = this.hydrateRow(row);
+      const haystack = JSON.stringify(decoded.requestBody);
+      if (haystack.includes(needle)) hits.push(decoded);
+    }
+    const page = hits.slice(paging.offset, paging.offset + paging.limit);
+    return {
+      data: page,
+      has_more: paging.offset + paging.limit < hits.length
+    };
+  }
+
+  deleteOlderThan(isoCutoff: string): number {
+    const info = this.db
+      .prepare("DELETE FROM entries WHERE timestamp < ?")
+      .run(isoCutoff);
+    return Number(info.changes);
+  }
+
+  deleteBySession(sessionId: string): number {
+    const info = this.db
+      .prepare("DELETE FROM entries WHERE session_id = ?")
+      .run(sessionId);
+    return Number(info.changes);
+  }
+
   close(): void {
     this.db.close();
   }
