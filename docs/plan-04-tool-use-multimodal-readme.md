@@ -79,3 +79,20 @@ These were known at write-time and are still open going into execution:
 6. **`tool_choice: { type: "tool", name: "X" }` enforcement.** Plan 04 ships the directive-on-system-prompt approach per the spec. It's best-effort. If a strict caller needs hard enforcement, the path is (a) inspect outgoing `tool_use_start` events and (b) drop / replace any that name a different tool. That belongs in a future plan once we measure how often the model honors the directive.
 
 7. **Tool-result with image content.** Anthropic's docs allow `tool_result.content` to wrap images. Plan 04 only honors string and text-block-array content — image content arrays throw 400. Plan 05 should revisit (probably folding into the same code path as request-side images).
+
+---
+
+## Deviations from the as-designed plan
+
+These are minimal corrections to plan-shipped code that I applied at execution time. Each is small, isolated, and preserves intent.
+
+1. **Task 1 — type-test discriminant guards.** The plan's `types.test.ts` reads bare properties off the widened `AnthropicContentBlock` (e.g. `widened.id`, `widened.tool_use_id`). The TypeScript union narrows by discriminant; bare access without a `type === "tool_use"` guard would fail typecheck once the union becomes strictly typed. Replaced bare accesses with discriminant ternaries (`widened.type === "tool_use" ? widened.id : ""`). Pure refactor — runtime semantics identical.
+
+2. **Task 1 — vitest erases types.** The plan's Step 2 expects `npx vitest run` to FAIL before implementation because the imported types don't exist. Vitest only runs JS (types are erased), so the test passed even before the types were added. Documented for awareness; the type-correctness of the test only becomes load-bearing when tests are typechecked (they're currently excluded from `tsc` via `tsconfig.json#exclude`).
+
+3. **Task 2 — sleep idiom for MOCK_STOP_SEQUENCE_AT.** The plan calls `await new Promise((r) => setTimeout(r, 5000))` but Plan 02 deviation #1 (per the executor brief) found bare `new Promise(() => {})` triggers Node's unsettled-top-level-await detection. Used the `setInterval(() => {}, 1_000_000)` keep-alive idiom inside a settling Promise so the mock stays alive for 5s without tripping Node's exit-13 path.
+
+4. **Task 5 — mock-claude system slice bumped 32 → 256.** The mock echoes `system.slice(0, 32)` (Plan 02 chose 32 chars). The Plan-04 `tool_choice` test directives ("be precise\n\nYou must call exactly one tool this turn.") get cut mid-directive at 32 chars, so the regex assertions never match. Bumped the slice to 256. Plan-02 tests only check the `[system:` prefix; no Plan-02 test depends on the 32-char cap.
+
+5. **Task 7 — messages.test.ts and countTokens.test.ts not in plan's file map.** The plan instructs deleting 7 Plan-03 fail-loud tests from `requestTranslator.test.ts` but does not mention `tests/unit/anthropicShim/messages.test.ts` (3 HTTP-level fail-loud tests for image/tools/stop_sequences) or `tests/unit/anthropicShim/countTokens.test.ts` (1 HTTP-level fail-loud test for image). Those tests regressed once the translator stopped throwing. Updated them in-place to assert 200 OK (passthrough behavior) instead of 400, matching Plan 04's intent. Documented in the test files' renamed `it("accepts ...")` titles.
+
