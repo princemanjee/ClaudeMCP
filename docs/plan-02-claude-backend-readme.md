@@ -50,4 +50,77 @@ This is a deliberate fail-loud choice: rather than silently producing wrong outp
 
 ## Deviations from this plan that landed during execution
 
-(Filled in by the implementer / reviewer during the actual task cycles. Notable items typically include comment clarifications, additional defensive tests, or minor type tightening discovered during code-quality review.)
+The following minimal corrections were applied during execution to fix plan bugs or platform-specific issues. None changed the design; all were the smallest fix needed to make tests pass and tsc check.
+
+### 1. Mock-claude `MOCK_SLEEP_FOREVER` — `await new Promise(() => {})` exits immediately
+
+**File:** `tests/fixtures/mock-claude/index.mjs`
+
+**Plan said:**
+```js
+if (prompt.includes("MOCK_SLEEP_FOREVER")) {
+  await new Promise(() => {}); // never resolves
+}
+```
+
+**What actually happens:** Node.js ESM modules detect "unsettled top-level await" and exit cleanly with code 13 within ~40ms, printing a warning. This defeated the Task 3 timeout test (`runClaude` expected `timedOut: true` but the mock had already exited cleanly long before the 250ms timer fired).
+
+**Fix:** Replace the bare hung promise with a `setInterval` that keeps the event loop alive:
+```js
+if (prompt.includes("MOCK_SLEEP_FOREVER")) {
+  await new Promise((_resolve) => {
+    setInterval(() => {}, 1_000_000);
+  });
+}
+```
+
+This is the smallest change that makes the mock actually hang as the plan intended. Verified the Task 3 timeout test (`runClaude times out and kills the process`) and the Task 4 timeout test (`runClaudeStream stops iterating after timeout kills the process`) both pass.
+
+### 2. `noUncheckedIndexedAccess` — `queue.shift()` returns `unknown | undefined`
+
+**File:** `src/runners/claudeStreamRunner.ts`
+
+**Plan said:** `yield queue.shift();`
+
+**What `tsc` would see:** With `noUncheckedIndexedAccess` enabled in `tsconfig.json`, `Array#shift()` widens to `T | undefined`, so the generator's yield type would have to be `unknown | undefined` instead of `unknown`. The async iterator's element type would no longer match.
+
+**Fix:** Add a non-null assertion — safe because the surrounding `if (queue.length > 0)` guard guarantees a value:
+```ts
+yield queue.shift()!;
+```
+
+This is the minimum tightening required.
+
+### 3. Test count in Task 6: 12 instead of 13
+
+**File:** `tests/unit/backends/claudeBackend.test.ts`
+
+**Plan said:** Task 6 Step 2 expects "8 original tests pass, 5 new tests FAIL" → "Expected: PASS — all 13 tests green (8 original + 5 new)."
+
+**Reality:** The original Task 5 skeleton suite has 8 tests including `invoke() throws — landed in Task 6`. Task 6 replaces the invoke() implementation so it no longer throws — that test cannot survive Task 6 as-written. The cleanest fix is to replace the placeholder test with the 5 new tests instead of appending alongside it, yielding 7 surviving skeleton tests + 5 new invoke tests = 12 total in the file.
+
+This brings the final suite total to **93 tests** (57 from Plan 01 + 36 new), not the 94 the plan predicted. The discrepancy is exactly the removed placeholder.
+
+### 4. Windows file mode for `tests/fixtures/mock-claude/index.mjs`
+
+**File:** `tests/fixtures/mock-claude/index.mjs`
+
+**Plan said:** Self-review checklist line: "Mock-claude fixture is executable on macOS (`-rwxr-xr-x` permission visible via `git ls-files --stage`)."
+
+**Reality:** The implementer's environment is Windows, where `chmod +x` is a no-op against `core.filemode=false`. Git records the file as `100644` regardless. This will need to be fixed on a Unix host before macOS CI / direct-shebang invocation will work; for now it doesn't affect tests because they always invoke via `node tests/fixtures/mock-claude/index.mjs` (the explicit `node` prefix bypasses the shebang and the executable bit).
+
+**Fix:** None applied — recording for future reference. On a macOS or Linux host, run:
+```bash
+git update-index --chmod=+x tests/fixtures/mock-claude/index.mjs
+git commit -m "chore: mark mock-claude executable for macOS"
+```
+
+### Summary
+
+- 1 mock-fixture bug fix (top-level await never sleeps)
+- 1 type assertion to satisfy `noUncheckedIndexedAccess`
+- 1 test-count reconciliation (12 vs 13, 93 vs 94 total)
+- 1 platform deferral (file mode on Windows)
+
+No changes to the documented architecture, the `Backend` interface, the runner argv shapes, or the event-normalization logic.
+
