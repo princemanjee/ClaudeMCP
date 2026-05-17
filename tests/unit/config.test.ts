@@ -148,4 +148,66 @@ describe("loadConfig", () => {
       }
     );
   });
+
+  it("accepts claude.command as a string array (e.g. ['wsl', 'claude'])", () => {
+    withTempConfig(
+      {
+        apiKey: "sk-test",
+        claude: { enabled: true, command: ["wsl", "claude"] },
+        gemini: { enabled: false, command: "gemini" },
+        lmstudio: { enabled: false, instances: [] },
+        ollama: { enabled: false, useNativeApi: false, instances: [] }
+      },
+      (path) => {
+        const cfg = loadConfig(path);
+        expect(cfg.claude.command).toEqual(["wsl", "claude"]);
+      }
+    );
+  });
+
+  it("accepts gemini.command as a string array", () => {
+    withTempConfig(
+      {
+        apiKey: "sk-test",
+        claude: { enabled: true, command: "claude" },
+        gemini: { enabled: true, command: ["docker", "run", "--rm", "gemini-image"] },
+        lmstudio: { enabled: false, instances: [] },
+        ollama: { enabled: false, useNativeApi: false, instances: [] }
+      },
+      (path) => {
+        const cfg = loadConfig(path);
+        expect(cfg.gemini.command).toEqual(["docker", "run", "--rm", "gemini-image"]);
+      }
+    );
+  });
+
+  it("rejects claude.command as an empty array", () => {
+    withTempConfig(
+      {
+        apiKey: "sk-test",
+        claude: { enabled: true, command: [] },
+        gemini: { enabled: false, command: "gemini" },
+        lmstudio: { enabled: false, instances: [] },
+        ollama: { enabled: false, useNativeApi: false, instances: [] }
+      },
+      (path) => {
+        expect(() => loadConfig(path)).toThrow();
+      }
+    );
+  });
+
+  it("rejects claude.command as a non-string non-array (e.g. number)", () => {
+    withTempConfig(
+      {
+        apiKey: "sk-test",
+        claude: { enabled: true, command: 42 },
+        gemini: { enabled: false, command: "gemini" },
+        lmstudio: { enabled: false, instances: [] },
+        ollama: { enabled: false, useNativeApi: false, instances: [] }
+      },
+      (path) => {
+        expect(() => loadConfig(path)).toThrow();
+      }
+    );
+  });
 });
