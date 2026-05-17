@@ -22,9 +22,24 @@ export interface OllamaNativeClientOptions {
   timeoutMs: number;
 }
 
+class EmbedNotFoundError extends Error {
+  constructor() {
+    super("ollama embed: /api/embed not found");
+    this.name = "EmbedNotFoundError";
+  }
+}
+
 export class OllamaNativeClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+
+  /**
+   * Per-instance probe cache: which embeddings path responded successfully?
+   *   null  → not yet probed
+   *   "v2"  → /api/embed worked
+   *   "v1"  → /api/embed 404'd; using /api/embeddings legacy path
+   */
+  private embedPath: null | "v1" | "v2" = null;
 
   constructor(opts: OllamaNativeClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
@@ -149,5 +164,118 @@ export class OllamaNativeClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Embeddings. Tries /api/embed first (modern), falls back to /api/embeddings
+   * (legacy single-prompt shape) on HTTP 404. The legacy path is called once
+   * per input string and the results merged into the modern response shape so
+   * callers see a uniform `{embeddings: number[][]}` regardless of server age.
+   */
+  async embed(body: { model: string; input: string | string[] } & Record<string, unknown>): Promise<unknown> {
+    const inputs = Array.isArray(body.input) ? body.input : [body.input];
+
+    if (this.embedPath === null || this.embedPath === "v2") {
+      try {
+        const resp = await this.embedModern(body, inputs);
+        this.embedPath = "v2";
+        return resp;
+      } catch (err) {
+        if (err instanceof EmbedNotFoundError) {
+          this.embedPath = "v1";
+          // fall through to legacy path
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    // Legacy path: one POST per input string.
+    const embeddings: number[][] = [];
+    for (const input of inputs) {
+      const legacyBody: Record<string, unknown> = { ...body, prompt: input };
+      delete legacyBody.input;
+      const url = `${this.baseUrl}/api/embeddings`;
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(legacyBody),
+          signal: ctl.signal
+        });
+        if (!res.ok) {
+          throw new Error(
+            `ollama embed (legacy) failed: HTTP ${res.status} ${res.statusText} @ ${url}`
+          );
+        }
+        const parsed = (await res.json()) as { embedding?: number[] };
+        if (!Array.isArray(parsed.embedding)) {
+          throw new Error(`ollama embed (legacy) response missing embedding[] @ ${url}`);
+        }
+        embeddings.push(parsed.embedding);
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          throw new Error(`ollama embed timeout after ${this.timeoutMs}ms @ ${url}`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return { model: body.model, embeddings };
+  }
+
+  private async embedModern(
+    body: Record<string, unknown>,
+    inputs: string[]
+  ): Promise<unknown> {
+    const url = `${this.baseUrl}/api/embed`;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, input: inputs }),
+        signal: ctl.signal
+      });
+      if (res.status === 404) {
+        throw new EmbedNotFoundError();
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(
+          `ollama embed failed: HTTP ${res.status} ${res.statusText} @ ${url}` +
+            (text ? `: ${text.slice(0, 200)}` : "")
+        );
+      }
+      return await res.json();
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(`ollama embed timeout after ${this.timeoutMs}ms @ ${url}`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * One-shot variant of chat(): POST /api/chat with stream: false. Returns
+   * the parsed terminal JSON object directly. Used by countTokens probes.
+   */
+  async chatBuffered(body: Record<string, unknown>): Promise<unknown> {
+    // Even with stream: false, Ollama may still emit a single NDJSON line
+    // (depending on version). Reuse chat() and return the last yielded event.
+    let last: unknown = null;
+    for await (const ev of this.chat({ ...body, stream: false })) {
+      last = ev;
+    }
+    if (last === null) {
+      throw new Error(`ollama chatBuffered: stream produced zero events`);
+    }
+    return last;
   }
 }
