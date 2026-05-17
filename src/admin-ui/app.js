@@ -514,7 +514,78 @@ function routerPanel() {
     isDirty() { return JSON.stringify(this.config) !== JSON.stringify(this.draft); },
   };
 }
-function generalPanel()   { return { init() { /* see Task 13 */ } }; }
+function generalPanel() {
+  return {
+    loading: true,
+    error: null,
+    config: null,
+    draft: null,
+    newApiKey: "",
+    showBindConfirm: false,
+    pendingBindToggle: null,
+
+    async init() {
+      try {
+        const res = await adminFetch("/admin/config");
+        this.config = await res.json();
+        this.draft = JSON.parse(JSON.stringify(this.config));
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    requestBindToggle(nextValue) {
+      // If disabling (true → false), require confirmation.
+      if (this.draft.adminUi.bindLocalhost === true && nextValue === false) {
+        this.pendingBindToggle = false;
+        this.showBindConfirm = true;
+        return;
+      }
+      this.draft.adminUi.bindLocalhost = nextValue;
+    },
+
+    confirmBindToggle() {
+      this.draft.adminUi.bindLocalhost = this.pendingBindToggle;
+      this.showBindConfirm = false;
+      this.pendingBindToggle = null;
+    },
+    cancelBindToggle() {
+      this.showBindConfirm = false;
+      this.pendingBindToggle = null;
+    },
+
+    async save() {
+      this.error = null;
+      const patch = computeConfigPatch(this.config, this.draft);
+      if (this.newApiKey.trim().length > 0) {
+        patch.apiKey = this.newApiKey;
+      } else {
+        // Plan 11's PATCH rejects the redacted "***" placeholder; strip it.
+        if (patch.apiKey === "***") delete patch.apiKey;
+      }
+      const res = await adminFetch("/admin/config", { method: "PATCH", body: JSON.stringify(patch) });
+      if (res.ok) {
+        this.newApiKey = "";
+        const reloaded = await (await adminFetch("/admin/config")).json();
+        this.config = reloaded;
+        this.draft = JSON.parse(JSON.stringify(reloaded));
+      } else {
+        const b = await res.json().catch(() => ({}));
+        this.error = (b.error && b.error.message) || `HTTP ${res.status}`;
+      }
+    },
+    discard() {
+      this.draft = JSON.parse(JSON.stringify(this.config));
+      this.newApiKey = "";
+    },
+    isDirty() {
+      return this.newApiKey.length > 0 ||
+        JSON.stringify(this.config) !== JSON.stringify(this.draft);
+    },
+  };
+}
 function archivePanel()   { return { init() { /* see Task 14 */ } }; }
 
 // Expose globally so Alpine's x-data attributes can resolve them without imports.

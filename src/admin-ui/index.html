@@ -276,7 +276,78 @@
               </div>
             </template>
           </section>
-          <section x-show="activePanel === 'general'"   x-data="generalPanel()"     x-init="init()"></section>
+          <section x-show="activePanel === 'general'" x-data="generalPanel()" x-init="init()">
+            <template x-if="loading"><p class="muted">Loading…</p></template>
+            <template x-if="error"><p class="error" x-text="error"></p></template>
+
+            <template x-if="!loading && draft">
+              <div class="glass-card" style="padding: 24px;">
+
+                <h2>API key</h2>
+                <div class="form-grid">
+                  <label>Current
+                    <input type="text" value="***" disabled>
+                  </label>
+                  <label>Set new API key (leave blank to keep)
+                    <input type="password" x-model="newApiKey" autocomplete="new-password">
+                  </label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Archive</h2>
+                <div class="form-grid">
+                  <label>DB path<input type="text" x-model="draft.archive.dbPath"></label>
+                  <label>Compression level<input type="number" x-model.number="draft.archive.compressionLevel"></label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Cache</h2>
+                <div class="form-grid">
+                  <label>File<input type="text" x-model="draft.cache.file"></label>
+                  <label>TTL (ms)<input type="number" x-model.number="draft.cache.ttlMs"></label>
+                  <label>Max entries<input type="number" x-model.number="draft.cache.maxEntries"></label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Files</h2>
+                <div class="form-grid">
+                  <label>Dir<input type="text" x-model="draft.files.dir"></label>
+                  <label>TTL (ms)<input type="number" x-model.number="draft.files.ttlMs"></label>
+                  <label>Max total bytes<input type="number" x-model.number="draft.files.maxTotalBytes"></label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Admin UI</h2>
+                <div class="form-grid">
+                  <label class="toggle">
+                    <input type="checkbox" :checked="draft.adminUi.bindLocalhost" @change="requestBindToggle($event.target.checked)">
+                    bindLocalhost
+                  </label>
+                  <label>sessionTtlMs<input type="number" x-model.number="draft.adminUi.sessionTtlMs"></label>
+                </div>
+
+                <footer class="save-bar" x-show="isDirty()" style="margin-top: 24px;">
+                  <button type="button" class="ghost" @click="discard()">Discard</button>
+                  <button type="button" class="primary" @click="save()">Save changes</button>
+                </footer>
+              </div>
+            </template>
+
+            <!-- Bind-localhost confirmation modal -->
+            <template x-if="showBindConfirm">
+              <div class="modal-overlay" @click.self="cancelBindToggle()">
+                <div class="modal glass-card">
+                  <h2>Disable localhost binding?</h2>
+                  <p>
+                    With bindLocalhost off, the admin UI accepts requests from any IP address.
+                    This exposes config editing — including the apiKey set form — to the local
+                    network. Only proceed if you have other network controls in place (firewall,
+                    reverse-proxy auth, etc.).
+                  </p>
+                  <div class="modal-actions">
+                    <button type="button" class="ghost" @click="cancelBindToggle()">Cancel</button>
+                    <button type="button" class="danger" @click="confirmBindToggle()">Disable bindLocalhost</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </section>
           <section x-show="activePanel === 'archive'"   x-data="archivePanel()"     x-init="init()"></section>
         </main>
 
