@@ -129,11 +129,13 @@ export function buildApp(deps: ServerDeps): Express {
   const generateHandlers = createGenerateContentHandlers({
     registry: deps.registry,
     fileStore: deps.fileStore,
+    archive: deps.archive,
     config: geminiHandlerConfig
   });
   const geminiCountTokensHandler = createGeminiCountTokensHandler({
     registry: deps.registry,
     fileStore: deps.fileStore,
+    archive: deps.archive,
     config: geminiHandlerConfig
   });
 

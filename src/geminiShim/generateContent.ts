@@ -1,9 +1,12 @@
 import type { Request, RequestHandler, Response } from "express";
+import { randomUUID } from "node:crypto";
 import { checkAuth, type AuthCarrier } from "../auth.js";
+import type { Archive, ArchiveStatus } from "../archive.js";
 import type { BackendRegistry } from "../backends/registry.js";
-import type { Backend, BackendId } from "../backends/types.js";
+import type { Backend, BackendId, NormalizedEvent } from "../backends/types.js";
 import type { FileStore } from "../fileStore.js";
 import { identifyBackend } from "../modelRouter.js";
+import { recordCompletion } from "../admin/recordCompletion.js";
 import {
   internalError,
   invalidArgumentError,
@@ -27,6 +30,8 @@ export interface GenerateContentHandlerDeps {
   registry: BackendRegistry;
   fileStore: FileStore;
   config: GenerateContentHandlerConfig;
+  /** Optional — when omitted, archive writes are skipped. */
+  archive?: Archive;
 }
 
 function resolveBackend(
@@ -97,29 +102,78 @@ function makeHandler(
 
     const meta = { model: normalized.model };
 
-    try {
-      const events = backend.invoke(normalized);
+    const startedAt = Date.now();
+    const action = opts.streaming ? "streamGenerateContent" : "generateContent";
+    const endpoint = `/v1beta/models/${model}:${action}`;
+    const logId = `gen_${randomUUID().replace(/-/g, "")}`;
+    let archivedBody: unknown = null;
+    let archivedStatus: ArchiveStatus = "ok";
 
+    const finalize = (): void => {
+      if (!deps.archive) return;
+      recordCompletion(deps.archive, {
+        endpoint,
+        backend: backend.id,
+        modelResolved: normalized.model,
+        logId,
+        startedAtMs: startedAt,
+        durationMs: Date.now() - startedAt,
+        status: archivedStatus,
+        requestBody: req.body as unknown,
+        responseBody: archivedBody
+      });
+    };
+
+    try {
       if (opts.streaming) {
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.flushHeaders?.();
-        for await (const chunk of normalizedEventsToGeminiSSE(events, meta)) {
+        // Tee the iterator so the archive sees the final aggregated body.
+        const collected: NormalizedEvent[] = [];
+        const teed: AsyncIterable<NormalizedEvent> = (async function* () {
+          for await (const ev of backend.invoke(normalized)) {
+            collected.push(ev);
+            yield ev;
+          }
+        })();
+        for await (const chunk of normalizedEventsToGeminiSSE(teed, meta)) {
           res.write(chunk);
         }
         res.end();
+        try {
+          archivedBody = await normalizedEventsToGeminiFinalResponse(
+            (async function* () {
+              for (const ev of collected) yield ev;
+            })(),
+            meta
+          );
+        } catch (err) {
+          archivedStatus = "error";
+          archivedBody = {
+            error: { message: err instanceof Error ? err.message : String(err) }
+          };
+        }
       } else {
-        const finalBody = await normalizedEventsToGeminiFinalResponse(events, meta);
+        const finalBody = await normalizedEventsToGeminiFinalResponse(
+          backend.invoke(normalized),
+          meta
+        );
+        archivedBody = finalBody;
         res.status(200).json(finalBody);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      archivedStatus = "error";
+      archivedBody = { error: { message: msg } };
       if (res.headersSent) {
         res.end();
       } else {
         res.status(500).json(internalError(`backend error: ${msg}`));
       }
+    } finally {
+      finalize();
     }
   };
 }
