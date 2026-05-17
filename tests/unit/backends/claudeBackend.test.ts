@@ -157,44 +157,234 @@ describe("ClaudeBackend skeleton", () => {
     expect(text).toContain("user: second");
   });
 
-  it("invoke throws on multimodal content (Plan 02 scope is text-only)", async () => {
+  it("invoke forwards tools to the CLI via --tools flag", async () => {
     const backend = new ClaudeBackend({
       command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
       timeoutMs: 5000
     });
-
-    await expect(async () => {
-      for await (const _ of backend.invoke({
-        model: "claude-sonnet-4-6",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "describe this" },
-              { type: "image", mediaType: "image/png", data: "BASE64" }
-            ]
-          }
-        ]
-      })) {
-        // no-op
-      }
-    }).rejects.toThrow(/multimodal/i);
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: [{ type: "text", text: "MOCK_VISION_REQUEST" }] }],
+      tools: [
+        {
+          name: "calculator",
+          description: "Adds two numbers",
+          inputSchema: { type: "object" }
+        }
+      ]
+    })) {
+      events.push(ev);
+    }
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
   });
 
-  it("invoke throws on tools array (Plan 02 scope is no-tools)", async () => {
+  it("invoke inlines an image content block into the folded prompt", async () => {
     const backend = new ClaudeBackend({
       command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
       timeoutMs: 5000
     });
+    // The mock echoes the inbound prompt back. Confirm the envelope made it
+    // through.
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this" },
+            { type: "image", mediaType: "image/png", data: "AAAAAA" }
+          ]
+        }
+      ]
+    })) {
+      events.push(ev);
+    }
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toContain("[image:image/png;base64,AAAAAA]");
+  });
 
-    await expect(async () => {
-      for await (const _ of backend.invoke({
-        model: "claude-sonnet-4-6",
-        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-        tools: [{ name: "calc", inputSchema: {} }]
-      })) {
-        // no-op
-      }
-    }).rejects.toThrow(/tool/i);
+  it("invoke inlines a document content block into the folded prompt", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "document", mediaType: "application/pdf", data: "JVBERi0=" }
+          ]
+        }
+      ]
+    })) {
+      events.push(ev);
+    }
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toContain("[document:application/pdf;base64,JVBERi0=]");
+  });
+
+  it("invoke re-inlines a tool_result block into the folded prompt", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "compute" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "t1", name: "calc", input: { x: 1, y: 2 } }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", toolUseId: "t1", content: "3" },
+            { type: "text", text: "MOCK_TOOL_RESULT_ECHO" }
+          ]
+        }
+      ]
+    })) {
+      events.push(ev);
+    }
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toContain("echo[tool_result:t1]=3");
+  });
+
+  it("invoke appends tool_choice 'any' directive to system prompt", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      system: "be precise",
+      toolChoice: "any",
+      tools: [{ name: "calc", inputSchema: {} }],
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    })) {
+      events.push(ev);
+    }
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    // The mock echoes the system prompt prefix when set.
+    expect(text).toContain("[system: be precise");
+    expect(text).toMatch(/must call exactly one tool/i);
+  });
+
+  it("invoke appends tool_choice 'none' directive", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      system: "be terse",
+      toolChoice: "none",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    })) {
+      events.push(ev);
+    }
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toMatch(/do not call any tools/i);
+  });
+
+  it("invoke appends tool_choice named-tool directive", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      system: "go",
+      toolChoice: { type: "tool", name: "calculator" },
+      tools: [{ name: "calculator", inputSchema: {} }, { name: "search", inputSchema: {} }],
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    })) {
+      events.push(ev);
+    }
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toMatch(/only call ['`]?calculator['`]?/i);
+  });
+
+  it("invoke for tool_choice 'auto' does NOT append any directive", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 5000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      system: "verbatim-system-prompt-marker",
+      toolChoice: "auto",
+      tools: [{ name: "calc", inputSchema: {} }],
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    })) {
+      events.push(ev);
+    }
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toContain("verbatim-system-prompt-marker");
+    // No additional sentences after the user system text.
+    expect(text).not.toMatch(/(must call|do not call|only call)/i);
+  });
+
+  it("invoke emits message_stop with stopReason 'stop_sequence' when matched", async () => {
+    const backend = new ClaudeBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-claude", "index.mjs")],
+      timeoutMs: 10000
+    });
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "claude-sonnet-4-6",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "MOCK_STOP_SEQUENCE_AT(STOP-NOW)" }] }
+      ],
+      stopSequences: ["STOP-NOW"]
+    })) {
+      events.push(ev);
+    }
+    const stop = events[events.length - 1];
+    expect(stop?.kind).toBe("message_stop");
+    if (stop?.kind === "message_stop") {
+      expect(stop.stopReason).toBe("stop_sequence");
+    }
+    // Text accumulated before the cut should NOT contain the sequence itself.
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).not.toContain("STOP-NOW");
+    expect(text).not.toContain("AFTER-SHOULD-BE-DROPPED");
   });
 });

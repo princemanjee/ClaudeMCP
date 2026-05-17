@@ -221,7 +221,7 @@ if (prompt.includes("MOCK_TOOL_RESULT_ECHO")) {
 // Normal output
 const responseText =
   system && system.length > 0
-    ? `[system: ${system.slice(0, 32)}] echo: ${prompt}`
+    ? `[system: ${system.slice(0, 256)}] echo: ${prompt}`
     : `echo: ${prompt}`;
 
 if (outputFormat === "stream-json") {
