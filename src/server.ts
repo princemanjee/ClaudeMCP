@@ -1,8 +1,9 @@
-import express, { type Express } from "express";
+import express, { type Express, type RequestHandler } from "express";
 import type { Server } from "node:http";
 import { Archive } from "./archive.js";
 import { BackendRegistry } from "./backends/registry.js";
 import { ClaudeBackend } from "./backends/claudeBackend.js";
+import { GeminiBackend } from "./backends/geminiBackend.js";
 import { FileStore } from "./fileStore.js";
 import { ResponseCache } from "./responseCache.js";
 import { loadConfig, type Config } from "./config.js";
@@ -10,6 +11,10 @@ import { createCountTokensHandler } from "./anthropicShim/countTokens.js";
 import { createMessagesHandler } from "./anthropicShim/messages.js";
 import { createModelsHandlers } from "./anthropicShim/models.js";
 import { createFilesHandlers } from "./anthropicShim/files.js";
+import { createCountTokensHandler as createGeminiCountTokensHandler } from "./geminiShim/countTokens.js";
+import { createFilesHandlers as createGeminiFilesHandlers } from "./geminiShim/files.js";
+import { createGenerateContentHandlers } from "./geminiShim/generateContent.js";
+import { createGeminiModelsHandlers } from "./geminiShim/models.js";
 import { createAdminArchiveHandlers } from "./admin/archive.js";
 
 export interface ServerDeps {
@@ -71,6 +76,84 @@ export function buildApp(deps: ServerDeps): Express {
   app.get("/v1/files/:id/content", filesHandlers.download);
   app.delete("/v1/files/:id", filesHandlers.delete);
 
+  // ---- Gemini shim ------------------------------------------------------
+  const geminiHandlerConfig = {
+    apiKey: deps.config.apiKey,
+    router: { defaultBackend: deps.config.router.defaultBackend }
+  };
+
+  const generateHandlers = createGenerateContentHandlers({
+    registry: deps.registry,
+    fileStore: deps.fileStore,
+    config: geminiHandlerConfig
+  });
+  const geminiCountTokensHandler = createGeminiCountTokensHandler({
+    registry: deps.registry,
+    fileStore: deps.fileStore,
+    config: geminiHandlerConfig
+  });
+
+  // The colon character is a path-to-regexp 0.1.13 param sigil; the `[:]`
+  // bracket escape is the load-bearing idiom for Gemini's `:method` action
+  // suffix under Express 4. Each method gets two routes: the bare-id form
+  // and a regex sibling that handles the `models/`-prefixed double-wrap form.
+  const stripPrefix = (req: express.Request): void => {
+    const m = req.params["model"];
+    if (typeof m === "string" && m.startsWith("models/")) {
+      req.params["model"] = m.slice("models/".length);
+    }
+  };
+
+  for (const action of ["generateContent", "streamGenerateContent", "countTokens"] as const) {
+    const handler: RequestHandler =
+      action === "generateContent"
+        ? generateHandlers.generate
+        : action === "streamGenerateContent"
+          ? generateHandlers.streamGenerate
+          : geminiCountTokensHandler;
+    // Bare-id form: /v1beta/models/<id>:<action>
+    app.post(`/v1beta/models/:model[:]${action}`, handler);
+    // Prefixed form: /v1beta/models/models/<id>:<action>
+    app.post(
+      new RegExp(`^/v1beta/models/(models/[^:]+):${action}$`),
+      (req, res, next) => {
+        const m = req.params[0];
+        if (typeof m === "string") {
+          req.params["model"] = m.startsWith("models/")
+            ? m.slice("models/".length)
+            : m;
+        }
+        stripPrefix(req);
+        handler(req, res, next);
+      }
+    );
+  }
+
+  const geminiModelsHandlers = createGeminiModelsHandlers({
+    registry: deps.registry,
+    config: { apiKey: deps.config.apiKey }
+  });
+  app.get("/v1beta/models", geminiModelsHandlers.list);
+  app.get("/v1beta/models/:id", geminiModelsHandlers.get);
+  // Allow the `models/<id>` double-wrap form via a regex route:
+  app.get(/^\/v1beta\/models\/models\/(.+)$/, (req, res, next) => {
+    const m = req.params[0];
+    if (typeof m === "string") req.params["id"] = m;
+    geminiModelsHandlers.get(req, res, next);
+  });
+
+  const geminiFilesHandlers = createGeminiFilesHandlers({
+    fileStore: deps.fileStore,
+    config: { apiKey: deps.config.apiKey }
+  });
+  app.post("/v1beta/files", geminiFilesHandlers.upload);
+  app.get("/v1beta/files", geminiFilesHandlers.list);
+  // Mount the :download route BEFORE the bare :id route to keep path-to-regexp
+  // from greedily swallowing the `:download` suffix in :id.
+  app.get("/v1beta/files/:id[:]download", geminiFilesHandlers.download);
+  app.get("/v1beta/files/:id", geminiFilesHandlers.getMetadata);
+  app.delete("/v1beta/files/:id", geminiFilesHandlers.delete);
+
   // ---- Admin archive ---------------------------------------------------
   const adminArchive = createAdminArchiveHandlers({
     archive: deps.archive,
@@ -99,6 +182,14 @@ export function buildRegistry(config: Config): BackendRegistry {
       new ClaudeBackend({
         command: config.claude.command,
         timeoutMs: config.claude.timeoutMs
+      })
+    );
+  }
+  if (config.gemini.enabled) {
+    registry.register(
+      new GeminiBackend({
+        command: config.gemini.command,
+        timeoutMs: config.gemini.timeoutMs
       })
     );
   }
