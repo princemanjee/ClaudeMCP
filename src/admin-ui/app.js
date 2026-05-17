@@ -230,7 +230,73 @@ function colorForBackend(backend) {
 // ============================================================
 // PANEL COMPONENT SKELETONS — replaced in later tasks.
 // ============================================================
-function dashboardPanel() { return { init() { /* see Task 10 */ } }; }
+function dashboardPanel() {
+  return {
+    backends: [],          // raw array from /admin/backends → data: []
+    requestCounts: {},     // backendId -> last-hour count (best-effort)
+    countsLoadedAt: null,
+    unsubscribe: null,
+    countInterval: null,
+
+    init() {
+      this.unsubscribe = subscribeBackends(state => {
+        const arr = state.data && Array.isArray(state.data.data) ? state.data.data : [];
+        this.backends = arr;
+        this.refreshCounts(false);
+      });
+      // Refresh counts every 30s in case backends don't change.
+      this.countInterval = setInterval(() => this.refreshCounts(true), 30_000);
+    },
+
+    destroy() {
+      if (this.unsubscribe) this.unsubscribe();
+      if (this.countInterval) clearInterval(this.countInterval);
+    },
+
+    async refreshCountsRaw() {
+      const sinceMs = Date.now() - 60 * 60 * 1000;
+      const since = new Date(sinceMs).toISOString();
+      const out = { ...this.requestCounts };
+      for (const b of this.backends) {
+        try {
+          // Real /admin/archive shape: { data: [...], has_more: bool }
+          // We count by paging through up to 200 (the cap) — this is best-effort
+          // and only approximates the true count.
+          const res = await adminFetch(`/admin/archive?backend=${encodeURIComponent(b.id)}&since=${encodeURIComponent(since)}&limit=200`);
+          if (res.ok) {
+            const body = await res.json();
+            const n = Array.isArray(body.data) ? body.data.length : 0;
+            // If has_more is true, indicate "200+".
+            out[b.id] = body.has_more ? `${n}+` : `${n}`;
+          }
+        } catch (_e) { /* keep previous value */ }
+      }
+      this.requestCounts = out;
+      this.countsLoadedAt = Date.now();
+    },
+
+    refreshCounts(force) {
+      if (!force && this.countsLoadedAt && Date.now() - this.countsLoadedAt < 25_000) return;
+      this.refreshCountsRaw();
+    },
+
+    statusColor(backend) { return colorForBackend(backend); },
+
+    formatTime(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts);
+      return d.toLocaleString();
+    },
+
+    modelsCount(backend) {
+      return Array.isArray(backend.models) ? backend.models.length : 0;
+    },
+
+    lastProbeAt(backend) {
+      return backend.lastProbe && backend.lastProbe.at ? backend.lastProbe.at : null;
+    },
+  };
+}
 function backendsPanel()  { return { init() { /* see Task 11 */ } }; }
 function routerPanel()    { return { init() { /* see Task 12 */ } }; }
 function generalPanel()   { return { init() { /* see Task 13 */ } }; }

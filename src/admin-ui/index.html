@@ -102,7 +102,28 @@
 
         <!-- Main content. One panel visible at a time. -->
         <main class="content">
-          <section x-show="activePanel === 'dashboard'" x-data="dashboardPanel()"   x-init="init()"></section>
+          <section x-show="activePanel === 'dashboard'" x-data="dashboardPanel()" x-init="init()" x-destroy="destroy()">
+            <div class="tile-grid">
+              <template x-for="b in backends" :key="b.id">
+                <article class="glass-card tile">
+                  <header class="tile-header">
+                    <span class="status-pill" :class="'status-' + statusColor(b)">
+                      <span class="dot"></span>
+                      <span x-text="b.id"></span>
+                    </span>
+                  </header>
+                  <dl class="tile-stats">
+                    <dt>Loaded models</dt><dd x-text="modelsCount(b)"></dd>
+                    <dt>Requests (last hour)</dt><dd x-text="requestCounts[b.id] ?? '—'"></dd>
+                    <dt>Last probe</dt><dd x-text="formatTime(lastProbeAt(b))"></dd>
+                  </dl>
+                </article>
+              </template>
+              <template x-if="backends.length === 0">
+                <p class="muted">No backends enabled. Configure one on the Backends panel.</p>
+              </template>
+            </div>
+          </section>
           <section x-show="activePanel === 'backends'"  x-data="backendsPanel()"    x-init="init()"></section>
           <section x-show="activePanel === 'router'"    x-data="routerPanel()"      x-init="init()"></section>
           <section x-show="activePanel === 'general'"   x-data="generalPanel()"     x-init="init()"></section>
