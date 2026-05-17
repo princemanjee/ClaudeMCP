@@ -1,0 +1,42 @@
+[data-theme="light"] {
+  /* Glass surfaces */
+  --glass-bg: rgba(255, 255, 255, 0.18);
+  --glass-bg-fallback: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.35);
+  --glass-blur: 20px;
+  --glass-saturate: 140%;
+
+  /* Accent colors */
+  --accent: #e91e63;
+  --accent-secondary: #06b6d4;
+
+  /* Text */
+  --text-primary: #1a1a2e;
+  --text-muted: #5b5b7a;
+
+  /* Viewport gradient — pastel lavender -> soft pink -> pale cyan */
+  --bg-gradient-start: #e0c3fc;
+  --bg-gradient-mid: #ffc8dd;
+  --bg-gradient-end: #bde0fe;
+
+  /* Focus + shadow */
+  --ring: rgba(233, 30, 99, 0.45);
+  --shadow-soft:
+    0 10px 30px rgba(0, 0, 0, 0.08),
+    0 2px 6px rgba(0, 0, 0, 0.04);
+
+  /* Status colors */
+  --status-green: #10b981;
+  --status-yellow: #f59e0b;
+  --status-red: #ef4444;
+
+  /* Form surfaces */
+  --input-bg: rgba(255, 255, 255, 0.26);
+
+  /* Modal */
+  --modal-overlay: rgba(20, 20, 40, 0.45);
+
+  /* Radii */
+  --card-radius: 20px;
+  --button-radius: 12px;
+}

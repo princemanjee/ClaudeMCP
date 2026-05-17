@@ -47,3 +47,13 @@ export function checkAuth(carrier: AuthCarrier, expectedApiKey: string): boolean
   if (!presented) return false;
   return safeEqual(presented, expectedApiKey);
 }
+
+/**
+ * Plan 12 helper: constant-time comparison of two strings. Used by the admin
+ * UI login flow (`createAdminUiHandler`) which receives the apiKey via a JSON
+ * body rather than a header/query carrier.
+ */
+export function checkApiKey(presented: string, expected: string): boolean {
+  if (typeof presented !== "string" || presented.length === 0) return false;
+  return safeEqual(presented, expected);
+}
