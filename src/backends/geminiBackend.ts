@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type {
   Backend,
   BackendCapabilities,
@@ -111,9 +112,9 @@ export class GeminiBackend implements Backend {
     // with Claude's surface:
     //   - samplingParams.{temperature,topP,topK}: TRUE (Claude has all false)
     //   - stopSequences: "native" (Claude is "server-side-cut")
-    //   - toolUse: false in Plan 06 baseline; Plan 07 turns it on with the shim
+    //   - toolUse: Plan 07 flipped on (was false in Plan 06 baseline)
     return {
-      toolUse: false,
+      toolUse: true,
       multimodal: true,
       thinking: false,
       cacheControl: "none",
@@ -134,15 +135,24 @@ export class GeminiBackend implements Backend {
   async *invoke(
     req: NormalizedRequest
   ): AsyncIterable<NormalizedEvent> {
-    this.assertPlan06Scope(req);
+    this.assertSupportedScope(req);
 
     const streamOpts: GeminiStreamOptions = {
       prompt: this.foldMessagesToPrompt(req),
-      systemPrompt: req.system,
-      model: req.model,
-      temperature: req.samplingParams?.temperature,
-      topP: req.samplingParams?.topP,
-      topK: req.samplingParams?.topK,
+      ...(req.system !== undefined ? { systemPrompt: req.system } : {}),
+      ...(req.model !== undefined ? { model: req.model } : {}),
+      ...(req.samplingParams?.temperature !== undefined
+        ? { temperature: req.samplingParams.temperature }
+        : {}),
+      ...(req.samplingParams?.topP !== undefined
+        ? { topP: req.samplingParams.topP }
+        : {}),
+      ...(req.samplingParams?.topK !== undefined
+        ? { topK: req.samplingParams.topK }
+        : {}),
+      ...(req.stopSequences && req.stopSequences.length > 0
+        ? { stopSequences: req.stopSequences }
+        : {}),
       timeoutMs: this.config.timeoutMs,
       geminiCommand: this.config.command
     };
@@ -150,11 +160,17 @@ export class GeminiBackend implements Backend {
     let startEmitted = false;
     let textIndex = 0;
     let textOpen = false;
+    let toolIndex = 0;
 
     for await (const raw of runGeminiStream(streamOpts)) {
       const ev = raw as {
         candidates?: Array<{
-          content?: { parts?: Array<{ text?: string }> };
+          content?: {
+            parts?: Array<{
+              text?: string;
+              functionCall?: { name?: string; args?: unknown };
+            }>;
+          };
           finishReason?: string;
         }>;
         modelVersion?: string;
@@ -171,12 +187,31 @@ export class GeminiBackend implements Backend {
         yield { kind: "message_start", model: ev.modelVersion ?? req.model };
       }
 
-      // Emit text deltas for each text part in this chunk.
+      // Emit text deltas for text parts, and tool_use_start/delta/stop for
+      // functionCall parts. Unknown shapes are silently ignored.
       const parts = candidate?.content?.parts ?? [];
       for (const part of parts) {
         if (typeof part.text === "string" && part.text.length > 0) {
           yield { kind: "text_delta", index: textIndex, text: part.text };
           textOpen = true;
+        }
+        if (
+          part.functionCall &&
+          typeof part.functionCall.name === "string"
+        ) {
+          const fc = part.functionCall;
+          const fcName = fc.name as string;
+          const callId = `call_${Buffer.from(`${fcName}:${toolIndex}`, "utf8").toString(
+            "base64url"
+          )}`;
+          yield { kind: "tool_use_start", index: toolIndex, id: callId, name: fcName };
+          yield {
+            kind: "tool_use_delta",
+            index: toolIndex,
+            partialJson: JSON.stringify(fc.args ?? {})
+          };
+          yield { kind: "tool_use_stop", index: toolIndex };
+          toolIndex++;
         }
       }
 
@@ -213,49 +248,46 @@ export class GeminiBackend implements Backend {
     yield { kind: "message_stop", stopReason: "error" };
   }
 
-  // ---- Plan-06 scope helpers ---------------------------------------------
+  // ---- Scope helpers ------------------------------------------------------
 
-  private assertPlan06Scope(req: NormalizedRequest): void {
-    if (req.tools && req.tools.length > 0) {
-      throw new Error(
-        "GeminiBackend (Plan 06): native tool calling lands in Plan 07"
-      );
-    }
-    if (req.stopSequences && req.stopSequences.length > 0) {
-      throw new Error(
-        "GeminiBackend (Plan 06): stop_sequences land in Plan 07"
-      );
-    }
+  private assertSupportedScope(req: NormalizedRequest): void {
     if (req.thinking) {
       throw new Error(
-        "GeminiBackend (Plan 06): thinking-mode lands in a follow-up plan"
+        "GeminiBackend: thinking-mode (Gemini 2.5) lands in a future plan"
       );
     }
-    for (const msg of req.messages) {
-      for (const block of msg.content) {
-        if (block.type === "image" || block.type === "document") {
-          throw new Error(
-            "GeminiBackend (Plan 06): multimodal content lands in Plan 07"
-          );
-        }
-        if (block.type === "tool_use" || block.type === "tool_result") {
-          throw new Error(
-            "GeminiBackend (Plan 06): tool_use/tool_result round-trip lands in Plan 07"
-          );
-        }
-      }
-    }
+    // image/document/tool_use/tool_result are now in scope per Plan 07.
+    // The folded prompt builder will serialize them (see foldMessagesToPrompt).
   }
 
   private foldMessagesToPrompt(req: NormalizedRequest): string {
     const lines: string[] = [];
     for (const msg of req.messages) {
-      const text = msg.content
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .filter((t) => t.length > 0)
-        .join("\n");
+      const parts: string[] = [];
+      for (const block of msg.content) {
+        if (block.type === "text") parts.push(block.text);
+        else if (block.type === "image")
+          parts.push(`[image:${block.mediaType};base64,${block.data}]`);
+        else if (block.type === "document")
+          parts.push(`[document:${block.mediaType};base64,${block.data}]`);
+        else if (block.type === "tool_use")
+          parts.push(
+            `[tool_use:${block.id}:${block.name}:${JSON.stringify(block.input)}]`
+          );
+        else if (block.type === "tool_result")
+          parts.push(`[tool_result:${block.toolUseId}:${block.content}]`);
+        else if (block.type === "thinking") parts.push(block.text);
+      }
+      const text = parts.filter((s) => s.length > 0).join("\n");
       if (text.length === 0) continue;
       lines.push(`${msg.role}: ${text}`);
+    }
+    if (req.tools && req.tools.length > 0) {
+      lines.push(
+        `tools_available: ${JSON.stringify(
+          req.tools.map((t) => ({ name: t.name, description: t.description }))
+        )}`
+      );
     }
     return lines.join("\n\n");
   }

@@ -63,6 +63,42 @@ if (prompt.includes("MOCK_INVALID_JSON")) {
   exit(0);
 }
 
+// MOCK_FUNCTION_CALL(name|argsJson) — emit a stream chunk that carries a
+// functionCall part instead of text. Used to verify the Gemini backend's
+// tool_use translation path.
+const fnCallMatch = prompt.match(/MOCK_FUNCTION_CALL\(([^|]+)\|([^)]+)\)/);
+if (fnCallMatch && outputFormat === "stream") {
+  const fnName = fnCallMatch[1];
+  const argsJson = fnCallMatch[2];
+  let args;
+  try {
+    args = JSON.parse(argsJson);
+  } catch {
+    args = {};
+  }
+  const chunk = {
+    candidates: [
+      {
+        content: {
+          parts: [{ functionCall: { name: fnName, args } }],
+          role: "model"
+        },
+        index: 0,
+        finishReason: "STOP"
+      }
+    ],
+    modelVersion: model,
+    usageMetadata: {
+      promptTokenCount: 1,
+      candidatesTokenCount: 1,
+      totalTokenCount: 2
+    },
+    sessionId
+  };
+  stdout.write(JSON.stringify(chunk) + "\n");
+  exit(0);
+}
+
 // Normal output
 const responseText =
   system && system.length > 0

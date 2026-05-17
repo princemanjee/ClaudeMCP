@@ -68,6 +68,36 @@ function isFileId(id: string): boolean {
   return /^file_[0-9a-f]{24}$/.test(id);
 }
 
+const GEMINI_FILE_ID_RE = /^files\/([0-9a-f]{24})$/;
+const ANTHROPIC_FILE_ID_RE = /^file_([0-9a-f]{24})$/;
+
+/**
+ * Accept either the Anthropic shim's `file_<24hex>` ID format or the Gemini
+ * shim's `files/<24hex>` format and return the canonical Anthropic form (which
+ * is what the on-disk content + sidecar are keyed by). Returns `null` for any
+ * malformed input — caller decides whether to throw `FileNotFoundError` or
+ * surface a different error envelope.
+ */
+export function normalizeFileId(id: string): string | null {
+  if (ANTHROPIC_FILE_ID_RE.test(id)) return id;
+  const gemini = GEMINI_FILE_ID_RE.exec(id);
+  if (gemini) return `file_${gemini[1]}`;
+  return null;
+}
+
+/**
+ * Re-emit a canonical Anthropic-format ID in the Gemini shim's format.
+ * Used by `src/geminiShim/files.ts` and `src/geminiShim/requestTranslator.ts`
+ * when returning metadata to a Gemini-SDK client.
+ */
+export function toGeminiFileId(canonicalId: string): string {
+  const m = ANTHROPIC_FILE_ID_RE.exec(canonicalId);
+  if (!m) {
+    throw new Error(`toGeminiFileId: not a canonical file id: ${canonicalId}`);
+  }
+  return `files/${m[1]}`;
+}
+
 function atomicWrite(path: string, contents: Buffer | string): void {
   const tmp = `${path}.tmp`;
   const fd = openSync(tmp, "w");
@@ -175,6 +205,20 @@ export class FileStore {
     return { bytes, metadata: updated };
   }
 
+  /**
+   * Resolve either ID format to the same backing content. Used by the
+   * Gemini shim (which speaks `files/<24hex>`) and by the Anthropic shim
+   * (which speaks `file_<24hex>`). Throws FileNotFoundError on malformed
+   * input rather than letting the regex mismatch escape.
+   */
+  async resolveById(
+    id: string
+  ): Promise<{ bytes: Buffer; metadata: FileMetadata }> {
+    const canonical = normalizeFileId(id);
+    if (canonical === null) throw new FileNotFoundError(id);
+    return this.get(canonical);
+  }
+
   async list(opts: {
     limit: number;
     offset: number;
@@ -203,7 +247,7 @@ export class FileStore {
     id: string,
     expectedKind: "image" | "document"
   ): Promise<NormalizedContentBlock> {
-    const { bytes, metadata } = await this.get(id);
+    const { bytes, metadata } = await this.resolveById(id);
     return {
       type: expectedKind,
       mediaType: metadata.mime,
