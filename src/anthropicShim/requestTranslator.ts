@@ -6,12 +6,17 @@ import type {
   NormalizedToolDef
 } from "../backends/types.js";
 import { ShimRequestError } from "./errors.js";
+import { FileNotFoundError, type FileStore } from "../fileStore.js";
 import type {
   AnthropicContentBlock,
   AnthropicMessage,
   AnthropicMessagesRequest,
   AnthropicSystem
 } from "./types.js";
+
+export interface TranslatorDeps {
+  fileStore?: FileStore;
+}
 
 function bad(message: string): never {
   throw new ShimRequestError(400, message);
@@ -35,12 +40,48 @@ function normalizeSystem(system: AnthropicSystem | undefined): string | undefine
   return parts.join("\n\n");
 }
 
-function normalizeContentBlock(block: AnthropicContentBlock): NormalizedContentBlock {
+async function resolveSourceBlock(
+  kind: "image" | "document",
+  source: Record<string, unknown>,
+  deps: TranslatorDeps
+): Promise<NormalizedContentBlock> {
+  const srcType = source["type"];
+  if (srcType === "url") {
+    bad(`${kind} source.type 'url' is not supported (URL fetching deferred)`);
+  }
+  if (srcType === "file") {
+    const fileId = source["file_id"];
+    if (typeof fileId !== "string") {
+      bad(`${kind} source.type 'file' requires a string file_id`);
+    }
+    if (!deps.fileStore) {
+      bad(
+        "source.type='file' references require server-side file storage; ensure /v1/files is enabled"
+      );
+    }
+    try {
+      return await deps.fileStore.resolveForInline(fileId, kind);
+    } catch (err) {
+      if (err instanceof FileNotFoundError) {
+        bad(`file not found: ${err.id}`);
+      }
+      throw err;
+    }
+  }
+  if (srcType !== "base64") bad(`unsupported ${kind} source.type: ${String(srcType)}`);
+  const mediaType = source["media_type"];
+  const data = source["data"];
+  if (typeof mediaType !== "string") bad(`${kind} source requires a string media_type`);
+  if (typeof data !== "string") bad(`${kind} source requires a string data`);
+  return { type: kind, mediaType, data };
+}
+
+async function normalizeContentBlock(
+  block: AnthropicContentBlock,
+  deps: TranslatorDeps
+): Promise<NormalizedContentBlock> {
   if (!isRecord(block) || typeof block["type"] !== "string") {
     bad("content block must have a string type field");
-  }
-  if (isRecord(block) && "cache_control" in block) {
-    bad("cache_control is not supported in Plan 04 (lands in Plan 05)");
   }
 
   const t = (block as { type: string }).type;
@@ -53,38 +94,12 @@ function normalizeContentBlock(block: AnthropicContentBlock): NormalizedContentB
     case "image": {
       const source = (block as { source?: unknown }).source;
       if (!isRecord(source)) bad("image content block requires a source object");
-      const srcType = source["type"];
-      if (srcType === "url") {
-        bad("image source.type 'url' is not supported (URL fetching lands in Plan 05)");
-      }
-      if (srcType === "file") {
-        bad("image source.type 'file' is not supported (file_<hash> resolution lands in Plan 05)");
-      }
-      if (srcType !== "base64") bad(`unsupported image source.type: ${String(srcType)}`);
-      const mediaType = source["media_type"];
-      const data = source["data"];
-      if (typeof mediaType !== "string") bad("image source requires a string media_type");
-      if (typeof data !== "string") bad("image source requires a string data");
-      return { type: "image", mediaType, data };
+      return resolveSourceBlock("image", source, deps);
     }
     case "document": {
       const source = (block as { source?: unknown }).source;
       if (!isRecord(source)) bad("document content block requires a source object");
-      const srcType = source["type"];
-      if (srcType === "url") {
-        bad("document source.type 'url' is not supported (URL fetching lands in Plan 05)");
-      }
-      if (srcType === "file") {
-        bad(
-          "document source.type 'file' is not supported (file_<hash> resolution lands in Plan 05)"
-        );
-      }
-      if (srcType !== "base64") bad(`unsupported document source.type: ${String(srcType)}`);
-      const mediaType = source["media_type"];
-      const data = source["data"];
-      if (typeof mediaType !== "string") bad("document source requires a string media_type");
-      if (typeof data !== "string") bad("document source requires a string data");
-      return { type: "document", mediaType, data };
+      return resolveSourceBlock("document", source, deps);
     }
     case "tool_use": {
       const id = (block as { id?: unknown }).id;
@@ -127,7 +142,10 @@ function normalizeContentBlock(block: AnthropicContentBlock): NormalizedContentB
   }
 }
 
-function normalizeMessage(msg: AnthropicMessage): NormalizedMessage {
+async function normalizeMessage(
+  msg: AnthropicMessage,
+  deps: TranslatorDeps
+): Promise<NormalizedMessage> {
   if (!isRecord(msg)) bad("each message must be an object");
   const role = msg["role"];
   if (role !== "user" && role !== "assistant") {
@@ -142,7 +160,9 @@ function normalizeMessage(msg: AnthropicMessage): NormalizedMessage {
   } else {
     bad("message.content must be a string or an array of content blocks");
   }
-  const normalized = blocks.map(normalizeContentBlock);
+  const normalized = await Promise.all(
+    blocks.map((b) => normalizeContentBlock(b, deps))
+  );
   return { role, content: normalized };
 }
 
@@ -175,9 +195,10 @@ function normalizeToolChoice(choice: unknown): NormalizedToolChoice {
   bad(`unsupported tool_choice.type: ${String(t)}`);
 }
 
-export function anthropicRequestToNormalized(
-  body: AnthropicMessagesRequest
-): NormalizedRequest {
+export async function anthropicRequestToNormalized(
+  body: AnthropicMessagesRequest,
+  deps: TranslatorDeps = {}
+): Promise<NormalizedRequest> {
   if (!isRecord(body)) bad("request body must be a JSON object");
 
   const model = (body as { model?: unknown }).model;
@@ -196,7 +217,9 @@ export function anthropicRequestToNormalized(
     );
   }
 
-  const messages = (rawMessages as AnthropicMessage[]).map(normalizeMessage);
+  const messages = await Promise.all(
+    (rawMessages as AnthropicMessage[]).map((m) => normalizeMessage(m, deps))
+  );
   const system = normalizeSystem(body.system);
 
   const samplingParams =

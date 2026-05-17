@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { anthropicRequestToNormalized } from "../../../src/anthropicShim/requestTranslator.js";
 import { ShimRequestError } from "../../../src/anthropicShim/errors.js";
+import { FileStore } from "../../../src/fileStore.js";
 
 describe("anthropicRequestToNormalized — happy paths", () => {
-  it("translates the simplest text-only request", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates the simplest text-only request", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hello" }]
     });
@@ -16,8 +20,8 @@ describe("anthropicRequestToNormalized — happy paths", () => {
     });
   });
 
-  it("preserves multi-block text content", () => {
-    const out = anthropicRequestToNormalized({
+  it("preserves multi-block text content", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [
         {
@@ -35,8 +39,8 @@ describe("anthropicRequestToNormalized — happy paths", () => {
     ]);
   });
 
-  it("string system prompt becomes NormalizedRequest.system as-is", () => {
-    const out = anthropicRequestToNormalized({
+  it("string system prompt becomes NormalizedRequest.system as-is", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       system: "you are helpful",
       messages: [{ role: "user", content: "hi" }]
@@ -44,8 +48,8 @@ describe("anthropicRequestToNormalized — happy paths", () => {
     expect(out.system).toBe("you are helpful");
   });
 
-  it("array system prompt is joined with double newline", () => {
-    const out = anthropicRequestToNormalized({
+  it("array system prompt is joined with double newline", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       system: [
         { type: "text", text: "be concise" },
@@ -56,8 +60,8 @@ describe("anthropicRequestToNormalized — happy paths", () => {
     expect(out.system).toBe("be concise\n\nbe polite");
   });
 
-  it("forwards max_tokens", () => {
-    const out = anthropicRequestToNormalized({
+  it("forwards max_tokens", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       max_tokens: 4096,
       messages: [{ role: "user", content: "hi" }]
@@ -65,8 +69,8 @@ describe("anthropicRequestToNormalized — happy paths", () => {
     expect(out.maxTokens).toBe(4096);
   });
 
-  it("forwards sampling params (claudeBackend will ignore — that's fine)", () => {
-    const out = anthropicRequestToNormalized({
+  it("forwards sampling params (claudeBackend will ignore — that's fine)", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       temperature: 0.7,
       top_p: 0.9,
@@ -80,8 +84,8 @@ describe("anthropicRequestToNormalized — happy paths", () => {
     });
   });
 
-  it("forwards metadata", () => {
-    const out = anthropicRequestToNormalized({
+  it("forwards metadata", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       metadata: { user_id: "u_42" },
       messages: [{ role: "user", content: "hi" }]
@@ -89,8 +93,8 @@ describe("anthropicRequestToNormalized — happy paths", () => {
     expect(out.metadata).toEqual({ user_id: "u_42" });
   });
 
-  it("preserves message ordering across roles", () => {
-    const out = anthropicRequestToNormalized({
+  it("preserves message ordering across roles", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [
         { role: "user", content: "first" },
@@ -103,35 +107,35 @@ describe("anthropicRequestToNormalized — happy paths", () => {
 });
 
 describe("anthropicRequestToNormalized — required-field validation", () => {
-  it("throws 400 when model is missing", () => {
-    expect(() =>
+  it("throws 400 when model is missing", async () => {
+    await expect(
       anthropicRequestToNormalized({
         // @ts-expect-error — testing runtime validation
         messages: [{ role: "user", content: "hi" }]
       })
-    ).toThrow(ShimRequestError);
+    ).rejects.toBeInstanceOf(ShimRequestError);
   });
 
-  it("throws 400 when messages is missing", () => {
-    expect(() =>
+  it("throws 400 when messages is missing", async () => {
+    await expect(
       anthropicRequestToNormalized({
         model: "claude-sonnet-4-6"
         // messages omitted
       } as never)
-    ).toThrow(/messages/i);
+    ).rejects.toThrow(/messages/i);
   });
 
-  it("throws 400 when messages is empty", () => {
-    expect(() =>
+  it("throws 400 when messages is empty", async () => {
+    await expect(
       anthropicRequestToNormalized({
         model: "claude-sonnet-4-6",
         messages: []
       })
-    ).toThrow(/at least one message/i);
+    ).rejects.toThrow(/at least one message/i);
   });
 
-  it("throws 400 when a message has an unsupported role", () => {
-    expect(() =>
+  it("throws 400 when a message has an unsupported role", async () => {
+    await expect(
       anthropicRequestToNormalized({
         model: "claude-sonnet-4-6",
         messages: [
@@ -139,11 +143,11 @@ describe("anthropicRequestToNormalized — required-field validation", () => {
           { role: "system", content: "no" }
         ]
       })
-    ).toThrow(/role/i);
+    ).rejects.toThrow(/role/i);
   });
 
-  it("throws 400 when a content block has an unknown type", () => {
-    expect(() =>
+  it("throws 400 when a content block has an unknown type", async () => {
+    await expect(
       anthropicRequestToNormalized({
         model: "claude-sonnet-4-6",
         messages: [
@@ -154,15 +158,15 @@ describe("anthropicRequestToNormalized — required-field validation", () => {
           }
         ]
       })
-    ).toThrow(/unknown.*type/i);
+    ).rejects.toThrow(/unknown.*type/i);
   });
 });
 
 describe("anthropicRequestToNormalized — Plan 03 scope rejections", () => {
-  function assertRejected(body: unknown, pattern: RegExp): void {
+  async function assertRejected(body: unknown, pattern: RegExp): Promise<void> {
     let caught: unknown;
     try {
-      anthropicRequestToNormalized(body as never);
+      await anthropicRequestToNormalized(body as never);
     } catch (e) {
       caught = e;
     }
@@ -171,8 +175,8 @@ describe("anthropicRequestToNormalized — Plan 03 scope rejections", () => {
     expect((caught as ShimRequestError).message).toMatch(pattern);
   }
 
-  it("rejects thinking field", () => {
-    assertRejected(
+  it("rejects thinking field", async () => {
+    await assertRejected(
       {
         model: "claude-sonnet-4-6",
         messages: [{ role: "user", content: "hi" }],
@@ -182,29 +186,31 @@ describe("anthropicRequestToNormalized — Plan 03 scope rejections", () => {
     );
   });
 
-  it("rejects cache_control on a content block", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "hi",
-                cache_control: { type: "ephemeral" }
-              } as unknown as { type: "text"; text: string }
-            ]
-          }
-        ]
-      },
-      /cache_control/i
-    );
+  it("passes cache_control through (Plan 05: cache_control handled at messages layer)", async () => {
+    // Plan 05 removes the translator-level cache_control reject. The
+    // translator now just normalizes; messages.ts consumes the body's
+    // raw cache_control markers itself.
+    const out = await anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "hi",
+              cache_control: { type: "ephemeral" }
+            } as unknown as { type: "text"; text: string }
+          ]
+        }
+      ]
+    });
+    // cache_control is stripped at normalization time (not part of NormalizedContentBlock).
+    expect(out.messages[0]?.content).toEqual([{ type: "text", text: "hi" }]);
   });
 
-  it("accepts empty stop_sequences array (treated as not supplied)", () => {
-    const out = anthropicRequestToNormalized({
+  it("accepts empty stop_sequences array (treated as not supplied)", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       stop_sequences: []
@@ -212,8 +218,8 @@ describe("anthropicRequestToNormalized — Plan 03 scope rejections", () => {
     expect(out.stopSequences).toBeUndefined();
   });
 
-  it("accepts empty tools array (treated as not supplied)", () => {
-    const out = anthropicRequestToNormalized({
+  it("accepts empty tools array (treated as not supplied)", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       tools: []
@@ -223,8 +229,8 @@ describe("anthropicRequestToNormalized — Plan 03 scope rejections", () => {
 });
 
 describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
-  it("translates an image content block with base64 source", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates an image content block with base64 source", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [
         {
@@ -245,8 +251,8 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
     ]);
   });
 
-  it("translates a document content block with base64 source", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates a document content block with base64 source", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [
         {
@@ -265,8 +271,8 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
     ]);
   });
 
-  it("rejects image source.type 'url' (lands in Plan 05 — fetch + inline)", () => {
-    expect(() =>
+  it("rejects image source.type 'url' (URL fetching deferred)", async () => {
+    await expect(
       anthropicRequestToNormalized({
         model: "claude-sonnet-4-6",
         messages: [
@@ -276,25 +282,11 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
           }
         ]
       })
-    ).toThrow(/url|source/i);
+    ).rejects.toThrow(/url|source/i);
   });
 
-  it("rejects image source.type 'file' (file_<hash> resolution lands in Plan 05)", () => {
-    expect(() =>
-      anthropicRequestToNormalized({
-        model: "claude-sonnet-4-6",
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "image", source: { type: "file", file_id: "file_abc" } }]
-          }
-        ]
-      })
-    ).toThrow(/file|source/i);
-  });
-
-  it("translates a tool_use content block in an assistant message", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates a tool_use content block in an assistant message", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [
         { role: "user", content: "compute" },
@@ -311,8 +303,8 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
     ]);
   });
 
-  it("translates a tool_result with string content shorthand", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates a tool_result with string content shorthand", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [
         {
@@ -326,8 +318,8 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
     ]);
   });
 
-  it("translates a tool_result with content-block array (joins text)", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates a tool_result with content-block array (joins text)", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [
         {
@@ -350,8 +342,8 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
     ]);
   });
 
-  it("translates the tools array", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates the tools array", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       tools: [
@@ -377,26 +369,26 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
     ]);
   });
 
-  it("translates tool_choice 'auto' / 'any' / 'none' / named", () => {
-    const auto = anthropicRequestToNormalized({
+  it("translates tool_choice 'auto' / 'any' / 'none' / named", async () => {
+    const auto = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       tool_choice: { type: "auto" }
     });
     expect(auto.toolChoice).toBe("auto");
-    const any = anthropicRequestToNormalized({
+    const any = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       tool_choice: { type: "any" }
     });
     expect(any.toolChoice).toBe("any");
-    const none = anthropicRequestToNormalized({
+    const none = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       tool_choice: { type: "none" }
     });
     expect(none.toolChoice).toBe("none");
-    const named = anthropicRequestToNormalized({
+    const named = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       tool_choice: { type: "tool", name: "calc" }
@@ -404,12 +396,127 @@ describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
     expect(named.toolChoice).toEqual({ type: "tool", name: "calc" });
   });
 
-  it("translates stop_sequences", () => {
-    const out = anthropicRequestToNormalized({
+  it("translates stop_sequences", async () => {
+    const out = await anthropicRequestToNormalized({
       model: "claude-sonnet-4-6",
       messages: [{ role: "user", content: "hi" }],
       stop_sequences: ["STOP", "END"]
     });
     expect(out.stopSequences).toEqual(["STOP", "END"]);
+  });
+});
+
+describe("anthropicRequestToNormalized — file id resolution", () => {
+  let dir: string;
+  let store: FileStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudemcp-fs-rt-"));
+    store = new FileStore({
+      dir,
+      ttlMs: 60_000,
+      maxTotalBytes: 10_000_000,
+      sweepIntervalMs: 0
+    });
+  });
+
+  afterEach(() => {
+    store.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("inlines image bytes when content block uses source.type='file'", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const stored = await store.upload(png, "x.png", "image/png");
+    const out = await anthropicRequestToNormalized(
+      {
+        model: "claude-sonnet-4-6",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: { type: "file", file_id: stored.id }
+              }
+            ]
+          }
+        ]
+      },
+      { fileStore: store }
+    );
+    expect(out.messages[0]?.content[0]).toEqual({
+      type: "image",
+      mediaType: "image/png",
+      data: png.toString("base64")
+    });
+  });
+
+  it("inlines document bytes when content block uses source.type='file'", async () => {
+    const pdf = Buffer.from("%PDF-1.4\n%fake");
+    const stored = await store.upload(pdf, "x.pdf", "application/pdf");
+    const out = await anthropicRequestToNormalized(
+      {
+        model: "claude-sonnet-4-6",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "document",
+                source: { type: "file", file_id: stored.id }
+              }
+            ]
+          }
+        ]
+      },
+      { fileStore: store }
+    );
+    expect(out.messages[0]?.content[0]).toEqual({
+      type: "document",
+      mediaType: "application/pdf",
+      data: pdf.toString("base64")
+    });
+  });
+
+  it("returns 400-shaped ShimRequestError when file_id is unknown", async () => {
+    await expect(
+      anthropicRequestToNormalized(
+        {
+          model: "claude-sonnet-4-6",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image",
+                  source: { type: "file", file_id: "file_000000000000000000000000" }
+                }
+              ]
+            }
+          ]
+        },
+        { fileStore: store }
+      )
+    ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/file/i) });
+  });
+
+  it("returns 400-shaped ShimRequestError when source.type='file' but no fileStore was provided", async () => {
+    await expect(
+      anthropicRequestToNormalized({
+        model: "claude-sonnet-4-6",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: { type: "file", file_id: "file_000000000000000000000000" }
+              }
+            ]
+          }
+        ]
+      })
+    ).rejects.toMatchObject({ status: 400 });
   });
 });
