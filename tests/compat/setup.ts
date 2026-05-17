@@ -97,7 +97,7 @@ export const COMPAT_MODELS: Record<CompatBackendId, { chat: string; embed?: stri
     claude: { chat: "claude-sonnet-4-6" },
     gemini: { chat: "gemini-flash" },
     lmstudio: { chat: "mock-chat-model", embed: "mock-embed-model" },
-    ollama: { chat: "llama3.2:latest", embed: "nomic-embed-text:latest" }
+    ollama: { chat: "llama-3.3-70b", embed: "nomic-embed-text" }
   };
 
 /**
