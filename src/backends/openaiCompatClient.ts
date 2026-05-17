@@ -224,4 +224,12 @@ export class OpenAICompatClient {
       clearTimeout(timer);
     }
   }
+
+  async embeddings(body: unknown): Promise<unknown> {
+    return this.fetchJson("/embeddings", {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(body)
+    });
+  }
 }

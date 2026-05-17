@@ -235,3 +235,48 @@ describe("OpenAICompatClient — chatCompletionsBuffered (non-streaming)", () =>
     ).rejects.toBeInstanceOf(OpenAICompatHTTPError);
   });
 });
+
+describe("OpenAICompatClient — embeddings", () => {
+  let handle: MockLmStudioHandle | undefined;
+  afterEach(async () => {
+    await handle?.close();
+    handle = undefined;
+  });
+
+  it("round-trips a single-input embedding request", async () => {
+    handle = await startMockLmStudio();
+    const c = new OpenAICompatClient({ baseUrl: handle.url, timeoutMs: 5000 });
+    const resp = (await c.embeddings({
+      model: "mock-embed-model",
+      input: "hello"
+    })) as {
+      data: Array<{ embedding: number[]; index: number }>;
+      model: string;
+    };
+    expect(resp.data).toHaveLength(1);
+    expect(resp.data[0]?.embedding).toHaveLength(4);
+    expect(resp.model).toBe("mock-embed-model");
+  });
+
+  it("round-trips a multi-input embedding request", async () => {
+    handle = await startMockLmStudio();
+    const c = new OpenAICompatClient({ baseUrl: handle.url, timeoutMs: 5000 });
+    const resp = (await c.embeddings({
+      model: "mock-embed-model",
+      input: ["a", "bb", "ccc"]
+    })) as {
+      data: Array<{ embedding: number[]; index: number }>;
+    };
+    expect(resp.data).toHaveLength(3);
+    expect(resp.data[0]?.index).toBe(0);
+    expect(resp.data[2]?.index).toBe(2);
+  });
+
+  it("throws OpenAICompatHTTPError on 5xx", async () => {
+    handle = await startMockLmStudio({ failEmbeddings: true });
+    const c = new OpenAICompatClient({ baseUrl: handle.url, timeoutMs: 5000 });
+    await expect(
+      c.embeddings({ model: "mock-embed-model", input: "hi" })
+    ).rejects.toBeInstanceOf(OpenAICompatHTTPError);
+  });
+});
