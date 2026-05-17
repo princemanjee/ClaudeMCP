@@ -5,6 +5,7 @@ import { BackendRegistry } from "./backends/registry.js";
 import { ClaudeBackend } from "./backends/claudeBackend.js";
 import { GeminiBackend } from "./backends/geminiBackend.js";
 import { LMStudioBackend } from "./backends/lmstudioBackend.js";
+import { OllamaBackend } from "./backends/ollamaBackend.js";
 import { FileStore } from "./fileStore.js";
 import { ResponseCache } from "./responseCache.js";
 import { loadConfig, type Config } from "./config.js";
@@ -200,6 +201,22 @@ export function buildRegistry(config: Config): BackendRegistry {
       new LMStudioBackend({
         enabled: config.lmstudio.enabled,
         instances: config.lmstudio.instances
+      })
+    );
+  }
+  if (config.ollama.enabled && config.ollama.instances.length > 0) {
+    registry.register(
+      new OllamaBackend({
+        enabled: config.ollama.enabled,
+        useNativeApi: config.ollama.useNativeApi,
+        instances: config.ollama.instances.map((inst) => ({
+          name: inst.name,
+          baseUrl: inst.baseUrl,
+          priority: inst.priority,
+          timeoutMs: inst.timeoutMs,
+          useNativeApi: inst.useNativeApi,
+          apiKey: inst.apiKey
+        }))
       })
     );
   }
