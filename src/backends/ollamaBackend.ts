@@ -239,10 +239,214 @@ export class OllamaBackend implements Backend {
       return;
     }
 
-    // Native dispatch lands in Task 8.
+    if (instance.mode === "native") {
+      yield* this.invokeNative(instance, req);
+      return;
+    }
+
     throw new Error(
-      "OllamaBackend.invoke(): native-mode dispatch lands in Plan 09 Task 8"
+      `OllamaBackend.invoke(): unreachable mode ${instance.mode}`
     );
+  }
+
+  private async *invokeNative(
+    instance: ResolvedInstance,
+    req: NormalizedRequest
+  ): AsyncIterable<NormalizedEvent> {
+    if (!instance.nativeClient) {
+      throw new Error(
+        `OllamaBackend.invokeNative: instance ${instance.name} has no nativeClient`
+      );
+    }
+    const body = this.buildNativeBody(req);
+
+    let started = false;
+    let nextIndex = 0;
+    let textOpen = false;
+    let sawToolUse = false;
+
+    const emitTextDelta = (text: string): NormalizedEvent => {
+      textOpen = true;
+      return { kind: "text_delta", index: nextIndex, text };
+    };
+
+    const closeTextRun = (): void => {
+      if (textOpen) {
+        textOpen = false;
+        nextIndex++;
+      }
+    };
+
+    for await (const raw of instance.nativeClient.chat(body)) {
+      const chunk = raw as {
+        model?: string;
+        done?: boolean;
+        done_reason?: string;
+        message?: {
+          content?: string;
+          tool_calls?: Array<{
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+        prompt_eval_count?: number;
+        eval_count?: number;
+      };
+
+      if (!started) {
+        started = true;
+        yield { kind: "message_start", model: chunk.model ?? req.model };
+      }
+
+      // Text content.
+      const content = chunk.message?.content;
+      if (typeof content === "string" && content.length > 0) {
+        yield emitTextDelta(content);
+      }
+
+      // Tool calls (typically arrive on a single chunk).
+      const calls = chunk.message?.tool_calls ?? [];
+      if (calls.length > 0) {
+        closeTextRun();
+        for (const [i, call] of calls.entries()) {
+          const name = call.function?.name ?? "unknown";
+          const id =
+            call.id ?? `call_${name}_${Date.now()}_${i}`;
+          const args = call.function?.arguments ?? "";
+          sawToolUse = true;
+          yield { kind: "tool_use_start", index: nextIndex, id, name };
+          yield { kind: "tool_use_delta", index: nextIndex, partialJson: args };
+          yield { kind: "tool_use_stop", index: nextIndex };
+          nextIndex++;
+        }
+      }
+
+      if (chunk.done === true) {
+        closeTextRun();
+        const usage =
+          chunk.prompt_eval_count !== undefined || chunk.eval_count !== undefined
+            ? {
+                inputTokens: chunk.prompt_eval_count ?? 0,
+                outputTokens: chunk.eval_count ?? 0
+              }
+            : undefined;
+        const stopReason = mapNativeStopReason(chunk.done_reason, sawToolUse);
+        yield { kind: "message_stop", stopReason, usage };
+        return;
+      }
+    }
+
+    // Stream ended without a done: true chunk.
+    if (!started) {
+      yield { kind: "message_start", model: req.model };
+    }
+    closeTextRun();
+    yield { kind: "message_stop", stopReason: "error" };
+  }
+
+  /**
+   * Translate a NormalizedRequest into Ollama's native /api/chat body shape.
+   * Test-visible (not `private`) so the unit tests can assert the precise
+   * shape without having to spawn a server.
+   */
+  buildNativeBody(req: NormalizedRequest): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: req.model,
+      messages: this.translateMessagesNative(req),
+      stream: true,
+      keep_alive: NATIVE_KEEP_ALIVE
+    };
+
+    if (req.tools && req.tools.length > 0) {
+      body.tools = req.tools.map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          ...(t.description !== undefined ? { description: t.description } : {}),
+          parameters: t.inputSchema
+        }
+      }));
+    }
+
+    const options: Record<string, unknown> = {};
+    if (req.samplingParams?.temperature !== undefined) options.temperature = req.samplingParams.temperature;
+    if (req.samplingParams?.topP !== undefined) options.top_p = req.samplingParams.topP;
+    if (req.samplingParams?.topK !== undefined) options.top_k = req.samplingParams.topK;
+    if (req.maxTokens !== undefined) options.num_predict = req.maxTokens;
+    if (req.stopSequences && req.stopSequences.length > 0) options.stop = req.stopSequences;
+    if (Object.keys(options).length > 0) body.options = options;
+
+    if (req.metadata?.format === "json") {
+      body.format = "json";
+    }
+
+    return body;
+  }
+
+  private translateMessagesNative(
+    req: NormalizedRequest
+  ): Array<Record<string, unknown>> {
+    const out: Array<Record<string, unknown>> = [];
+
+    if (req.system) {
+      out.push({ role: "system", content: req.system });
+    }
+
+    for (const msg of req.messages) {
+      // tool-role messages map 1:1 — Ollama wants one tool message per
+      // tool_result block (per-call).
+      if (msg.role === "tool") {
+        for (const block of msg.content) {
+          if (block.type === "tool_result") {
+            out.push({
+              role: "tool",
+              content: block.content,
+              tool_call_id: block.toolUseId
+            });
+          }
+        }
+        continue;
+      }
+
+      const textParts: string[] = [];
+      const images: string[] = [];
+      const toolCalls: Array<{
+        id: string;
+        function: { name: string; arguments: string };
+      }> = [];
+
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          textParts.push(block.text);
+        } else if (block.type === "image") {
+          // Ollama supports inline base64 image payloads on user messages.
+          images.push(block.data);
+        } else if (block.type === "tool_use") {
+          toolCalls.push({
+            id: block.id,
+            function: {
+              name: block.name,
+              arguments: typeof block.input === "string"
+                ? block.input
+                : JSON.stringify(block.input)
+            }
+          });
+        }
+        // document blocks: not in Ollama's surface — silently skipped here
+        // because vision is `images: [...]` only and PDFs aren't a first-class
+        // local-model input shape. Future plan if needed.
+      }
+
+      const entry: Record<string, unknown> = {
+        role: msg.role,
+        content: textParts.join("\n")
+      };
+      if (images.length > 0) entry.images = images;
+      if (toolCalls.length > 0) entry.tool_calls = toolCalls;
+      out.push(entry);
+    }
+
+    return out;
   }
 
   /**
@@ -418,6 +622,30 @@ interface OpenAIChunk {
     completion_tokens?: number;
     total_tokens?: number;
   };
+}
+
+function mapNativeStopReason(
+  doneReason: string | undefined,
+  sawToolUse: boolean
+): "end_turn" | "stop_sequence" | "max_tokens" | "tool_use" | "error" {
+  // Tool emission overrides the default when the reason isn't a hard length
+  // cap. The Anthropic shim downstream expects "tool_use" whenever the model
+  // intends the caller to run a tool.
+  if (sawToolUse && doneReason !== "length") {
+    return "tool_use";
+  }
+  switch (doneReason) {
+    case "stop":
+      return "end_turn";
+    case "length":
+      return "max_tokens";
+    case undefined:
+      return "end_turn";
+    default:
+      // Future Ollama versions may add new reasons (e.g., "stop_sequence",
+      // "load"). Default to error so the caller can decide.
+      return "error";
+  }
 }
 
 function mapFinishReason(

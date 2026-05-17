@@ -351,3 +351,192 @@ describe("OllamaBackend.invoke (compat mode)", () => {
     }).rejects.toThrow();
   });
 });
+
+describe("OllamaBackend.invoke (native mode)", () => {
+  let mock: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mock = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: true,
+      instances: [
+        { name: "local", baseUrl: mock.baseUrl, priority: 40, timeoutMs: 5000, useNativeApi: null }
+      ]
+    });
+    await backend.listModels();
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+  });
+
+  async function collect(it: AsyncIterable<import("../../../src/backends/types.js").NormalizedEvent>): Promise<import("../../../src/backends/types.js").NormalizedEvent[]> {
+    const out: import("../../../src/backends/types.js").NormalizedEvent[] = [];
+    for await (const ev of it) out.push(ev);
+    return out;
+  }
+
+  it("emits message_start → text_delta(s) → message_stop for a normal chat", async () => {
+    const events = await collect(
+      backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+      })
+    );
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+    const text = events
+      .filter((e): e is Extract<import("../../../src/backends/types.js").NormalizedEvent, { kind: "text_delta" }> => e.kind === "text_delta")
+      .map((e) => e.text)
+      .join("");
+    expect(text).toBe("echo: hello");
+  });
+
+  it("usage on message_stop comes from prompt_eval_count + eval_count", async () => {
+    const events = await collect(
+      backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+      })
+    );
+    const stop = events[events.length - 1];
+    if (stop?.kind !== "message_stop") throw new Error("expected message_stop");
+    expect(stop.usage?.inputTokens).toBeGreaterThan(0);
+    expect(stop.usage?.outputTokens).toBeGreaterThan(0);
+  });
+
+  it("emits tool_use events for tool_calls (native mode), stopReason=tool_use", async () => {
+    const events = await collect(
+      backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "MOCK_TOOL_CALL" }] }],
+        tools: [{ name: "echo", inputSchema: { type: "object" } }]
+      })
+    );
+    const starts = events.filter((e) => e.kind === "tool_use_start");
+    const deltas = events.filter((e) => e.kind === "tool_use_delta");
+    const stops = events.filter((e) => e.kind === "tool_use_stop");
+    expect(starts.length).toBe(1);
+    expect(deltas.length).toBe(1);
+    expect(stops.length).toBe(1);
+    const finalStop = events[events.length - 1];
+    if (finalStop?.kind !== "message_stop") throw new Error("expected message_stop");
+    expect(finalStop.stopReason).toBe("tool_use");
+  });
+
+  it("translates samplingParams into options.{temperature, top_p, top_k}", async () => {
+    // The mock doesn't validate the body; success of the round-trip is what
+    // we assert here. The shape contract is exercised more strictly in the
+    // unit-level translator helper test below.
+    const events = await collect(
+      backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        samplingParams: { temperature: 0.7, topP: 0.95, topK: 64 },
+        maxTokens: 256,
+        stopSequences: ["DONE"]
+      })
+    );
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("includes keep_alive in the request body by default (verified via translator helper)", () => {
+    const body = (backend as unknown as {
+      buildNativeBody: (req: import("../../../src/backends/types.js").NormalizedRequest) => Record<string, unknown>;
+    }).buildNativeBody({
+      model: "llama-3.3-70b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    });
+    expect(body.keep_alive).toBe("5m");
+    expect(body.stream).toBe(true);
+  });
+
+  it("translator: sampling params land under options, not flat", () => {
+    const body = (backend as unknown as {
+      buildNativeBody: (req: import("../../../src/backends/types.js").NormalizedRequest) => Record<string, unknown>;
+    }).buildNativeBody({
+      model: "llama-3.3-70b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      samplingParams: { temperature: 0.5, topP: 0.9, topK: 30 },
+      maxTokens: 128,
+      stopSequences: ["END"]
+    });
+    expect(body.temperature).toBeUndefined();
+    expect(body.top_p).toBeUndefined();
+    expect(body.top_k).toBeUndefined();
+    const options = body.options as Record<string, unknown>;
+    expect(options.temperature).toBe(0.5);
+    expect(options.top_p).toBe(0.9);
+    expect(options.top_k).toBe(30);
+    expect(options.num_predict).toBe(128);
+    expect(options.stop).toEqual(["END"]);
+  });
+
+  it("translator: format: \"json\" landed when req.metadata.format === 'json'", () => {
+    const body = (backend as unknown as {
+      buildNativeBody: (req: import("../../../src/backends/types.js").NormalizedRequest) => Record<string, unknown>;
+    }).buildNativeBody({
+      model: "llama-3.3-70b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      metadata: { format: "json" }
+    });
+    expect(body.format).toBe("json");
+  });
+
+  it("translator: image blocks lift onto user message as images: [...]", () => {
+    const body = (backend as unknown as {
+      buildNativeBody: (req: import("../../../src/backends/types.js").NormalizedRequest) => Record<string, unknown>;
+    }).buildNativeBody({
+      model: "llama-3.3-70b",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this?" },
+            { type: "image", mediaType: "image/png", data: "QkFTRTY0IGltYWdlIGRhdGE=" }
+          ]
+        }
+      ]
+    });
+    const messages = body.messages as Array<{ role: string; content: string; images?: string[] }>;
+    expect(messages[0]?.images).toEqual(["QkFTRTY0IGltYWdlIGRhdGE="]);
+    expect(messages[0]?.content).toBe("what is this?");
+  });
+
+  it("translator: assistant tool_use → tool_calls; tool_result → role=tool message", () => {
+    const body = (backend as unknown as {
+      buildNativeBody: (req: import("../../../src/backends/types.js").NormalizedRequest) => Record<string, unknown>;
+    }).buildNativeBody({
+      model: "llama-3.3-70b",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "use the tool" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "calling" },
+            { type: "tool_use", id: "call_42", name: "echo", input: { text: "x" } }
+          ]
+        },
+        {
+          role: "tool",
+          content: [{ type: "tool_result", toolUseId: "call_42", content: "ok" }]
+        }
+      ]
+    });
+    const messages = body.messages as Array<{
+      role: string;
+      content: string;
+      tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+      tool_call_id?: string;
+    }>;
+    expect(messages[1]?.role).toBe("assistant");
+    expect(messages[1]?.tool_calls?.[0]?.id).toBe("call_42");
+    expect(messages[1]?.tool_calls?.[0]?.function.name).toBe("echo");
+    expect(messages[2]?.role).toBe("tool");
+    expect(messages[2]?.tool_call_id).toBe("call_42");
+    expect(messages[2]?.content).toBe("ok");
+  });
+});
