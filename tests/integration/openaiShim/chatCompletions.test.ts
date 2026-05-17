@@ -121,12 +121,13 @@ interface Live {
   app: Express;
   http: import("node:http").Server;
   port: number;
+  archive: Archive;
   shutdown: () => Promise<void>;
 }
 
 async function startServer(opts: {
   registry: BackendRegistry;
-}): Promise<Live> {
+}): Promise<Live & { archive: Archive }> {
   const config = makeConfig();
   const archive = new Archive(config.archive.dbPath);
   const configSnapshot = new ConfigSnapshotStore({
@@ -149,6 +150,7 @@ async function startServer(opts: {
     app,
     http,
     port,
+    archive,
     shutdown: async (): Promise<void> => {
       await new Promise<void>((resolve) => http.close(() => resolve()));
       archive.close();
@@ -215,6 +217,24 @@ describe("integration: POST /v1/chat/completions × ClaudeBackend (mock-claude)"
     expect(body.choices).toHaveLength(1);
     expect(body.choices[0]?.finish_reason).toBe("stop");
     expect(typeof body.choices[0]?.message.content).toBe("string");
+  });
+
+  it("non-streaming chat completion is archived with endpoint + backend", async () => {
+    const res = await postChat(server.port, {
+      model: "claude-code-cli",
+      messages: [{ role: "user", content: "archive me please" }]
+    });
+    expect(res.status).toBe(200);
+    // fire-and-forget archive write happens via setImmediate
+    await new Promise((r) => setTimeout(r, 100));
+    const page = server.archive.list({ limit: 50, offset: 0 });
+    const entry = page.data.find(
+      (e) =>
+        e.endpoint === "/v1/chat/completions" &&
+        e.backend === "claude" &&
+        JSON.stringify(e.requestBody).includes("archive me please")
+    );
+    expect(entry, "expected archive entry for /v1/chat/completions").toBeDefined();
   });
 
   it("streaming emits OpenAI SSE terminated by data: [DONE]", async () => {

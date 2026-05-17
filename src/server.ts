@@ -213,6 +213,7 @@ export function buildApp(deps: ServerDeps): Express {
     "/v1/chat/completions",
     createChatCompletionsHandler({
       registry: deps.registry,
+      archive: deps.archive,
       config: {
         apiKey: openaiHandlerConfig.apiKey,
         router: openaiHandlerConfig.router
@@ -223,6 +224,7 @@ export function buildApp(deps: ServerDeps): Express {
     "/v1/embeddings",
     createEmbeddingsHandler({
       registry: deps.registry,
+      archive: deps.archive,
       config: openaiHandlerConfig
     })
   );

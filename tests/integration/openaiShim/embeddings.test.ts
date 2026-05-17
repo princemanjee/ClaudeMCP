@@ -109,6 +109,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
 interface Live {
   app: Express;
   port: number;
+  archive: Archive;
   shutdown: () => Promise<void>;
 }
 
@@ -136,6 +137,7 @@ async function startServer(opts: {
   return {
     app,
     port,
+    archive,
     shutdown: async (): Promise<void> => {
       await new Promise<void>((resolve) => http.close(() => resolve()));
       archive.close();
@@ -268,6 +270,23 @@ describe.skipIf(!HAS_LMSTUDIO)(
       const body = res.json as { data: Array<{ index: number }> };
       expect(body.data).toHaveLength(3);
       expect(body.data.map((d) => d.index)).toEqual([0, 1, 2]);
+    });
+
+    it("embeddings request is archived with endpoint + backend", async () => {
+      const res = await postEmbed(server!.port, {
+        model: "nomic-embed-text",
+        input: "needle-for-archive-check"
+      });
+      expect(res.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+      const page = server!.archive.list({ limit: 50, offset: 0 });
+      const entry = page.data.find(
+        (e) =>
+          e.endpoint === "/v1/embeddings" &&
+          e.backend === "lmstudio" &&
+          JSON.stringify(e.requestBody).includes("needle-for-archive-check")
+      );
+      expect(entry, "expected archive entry for /v1/embeddings").toBeDefined();
     });
   }
 );

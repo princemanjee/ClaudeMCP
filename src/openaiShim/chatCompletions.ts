@@ -1,9 +1,11 @@
 import type { Request, RequestHandler, Response } from "express";
 import { randomUUID } from "node:crypto";
 import { checkAuth, type AuthCarrier } from "../auth.js";
+import type { Archive, ArchiveStatus } from "../archive.js";
 import type { BackendRegistry } from "../backends/registry.js";
-import type { Backend, BackendId } from "../backends/types.js";
+import type { Backend, BackendId, NormalizedEvent } from "../backends/types.js";
 import { identifyBackend } from "../modelRouter.js";
+import { recordCompletion } from "../admin/recordCompletion.js";
 import {
   authenticationError,
   internalServerError,
@@ -26,6 +28,11 @@ export interface ChatCompletionsConfig {
 export interface ChatCompletionsDeps {
   registry: BackendRegistry;
   config: ChatCompletionsConfig;
+  /**
+   * Optional — when omitted, the handler still works but skips archive
+   * writes. `buildApp` always provides one in production.
+   */
+  archive?: Archive;
 }
 
 function resolveBackend(
@@ -107,21 +114,64 @@ export function createChatCompletionsHandler(
       (req.body as { stream?: unknown } | undefined)?.stream
     );
 
+    const startedAt = Date.now();
+    let archivedBody: unknown = null;
+    let archivedStatus: ArchiveStatus = "ok";
+
+    const finalize = (): void => {
+      if (!deps.archive) return;
+      recordCompletion(deps.archive, {
+        endpoint: "/v1/chat/completions",
+        backend: backend.id,
+        modelResolved: resolvedModel,
+        logId: messageId,
+        startedAtMs: startedAt,
+        durationMs: Date.now() - startedAt,
+        status: archivedStatus,
+        requestBody: req.body as unknown,
+        responseBody: archivedBody
+      });
+    };
+
     if (wantStream) {
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.flushHeaders?.();
       try {
-        for await (const chunk of normalizedEventsToOpenAISSE(
-          backend.invoke(reqForBackend),
-          meta
-        )) {
+        // Tee events through both the SSE encoder and a buffer that the
+        // archive helper can serialize into a final response shape.
+        const collected: NormalizedEvent[] = [];
+        const teed: AsyncIterable<NormalizedEvent> = (async function* () {
+          for await (const ev of backend.invoke(reqForBackend)) {
+            collected.push(ev);
+            yield ev;
+          }
+        })();
+        for await (const chunk of normalizedEventsToOpenAISSE(teed, meta)) {
           res.write(chunk);
         }
         res.write("data: [DONE]\n\n");
         res.end();
-      } catch {
+        try {
+          const { body } = await normalizedEventsToOpenAIFinalResponse(
+            (async function* () {
+              for (const ev of collected) yield ev;
+            })(),
+            meta
+          );
+          archivedBody = body;
+        } catch (err) {
+          archivedStatus = "error";
+          archivedBody = {
+            error: { message: err instanceof Error ? err.message : String(err) }
+          };
+        }
+      } catch (err) {
+        archivedStatus = "error";
+        archivedBody = {
+          error: { message: err instanceof Error ? err.message : String(err) }
+        };
         // Headers are already flushed; gracefully terminate.
         try {
           res.write("data: [DONE]\n\n");
@@ -129,6 +179,8 @@ export function createChatCompletionsHandler(
         } catch {
           // ignore
         }
+      } finally {
+        finalize();
       }
       return;
     }
@@ -138,12 +190,17 @@ export function createChatCompletionsHandler(
         backend.invoke(reqForBackend),
         meta
       );
+      archivedBody = body;
       res.status(200).json(body);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      archivedStatus = "error";
+      archivedBody = { error: { message: msg } };
       res
         .status(502)
         .json(internalServerError(`Claude pipeline failed: ${msg}`));
+    } finally {
+      finalize();
     }
   };
 }

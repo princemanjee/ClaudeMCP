@@ -1,8 +1,11 @@
 import type { Request, RequestHandler, Response } from "express";
+import { randomUUID } from "node:crypto";
 import { checkAuth, type AuthCarrier } from "../auth.js";
+import type { Archive, ArchiveStatus } from "../archive.js";
 import type { BackendRegistry } from "../backends/registry.js";
 import type { Backend, BackendId } from "../backends/types.js";
 import { identifyBackend } from "../modelRouter.js";
+import { recordCompletion } from "../admin/recordCompletion.js";
 import {
   authenticationError,
   internalServerError,
@@ -27,6 +30,8 @@ export interface EmbeddingsConfig {
 export interface EmbeddingsDeps {
   registry: BackendRegistry;
   config: EmbeddingsConfig;
+  /** Optional — when omitted, archive writes are skipped. */
+  archive?: Archive;
 }
 
 function encodeFloat32Base64(values: number[]): string {
@@ -166,6 +171,11 @@ export function createEmbeddingsHandler(deps: EmbeddingsDeps): RequestHandler {
       return;
     }
 
+    const startedAt = Date.now();
+    let archivedBody: unknown = null;
+    let archivedStatus: ArchiveStatus = "ok";
+    const logId = `embd_${randomUUID().replace(/-/g, "")}`;
+
     try {
       const result = await backend.embed({ model: resolvedModel, input });
       const data: OpenAIEmbeddingsItem[] = result.embeddings.map((emb, index) => ({
@@ -178,15 +188,32 @@ export function createEmbeddingsHandler(deps: EmbeddingsDeps): RequestHandler {
         data,
         model: result.model
       };
+      archivedBody = respBody;
       res.status(200).json(respBody);
     } catch (err) {
       const e = err as Error;
+      archivedStatus = "error";
+      archivedBody = { error: { message: e.message } };
       if (e.name === "AbortError" || e.name === "TimeoutError") {
         res.status(504).json(internalServerError("backend timeout"));
       } else {
         res
           .status(502)
           .json(internalServerError(`embeddings backend failed: ${e.message}`));
+      }
+    } finally {
+      if (deps.archive) {
+        recordCompletion(deps.archive, {
+          endpoint: "/v1/embeddings",
+          backend: backend.id,
+          modelResolved: resolvedModel,
+          logId,
+          startedAtMs: startedAt,
+          durationMs: Date.now() - startedAt,
+          status: archivedStatus,
+          requestBody: req.body as unknown,
+          responseBody: archivedBody
+        });
       }
     }
   };
