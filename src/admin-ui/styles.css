@@ -312,6 +312,29 @@ label.toggle input[type="checkbox"] { width: auto; }
 }
 
 /* ============================================================
+   PANEL-SPECIFIC: ROUTER
+   ============================================================ */
+.effort-map-block {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--button-radius);
+}
+.effort-map-block header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.effort-row {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+/* ============================================================
    PANEL-SPECIFIC: BACKENDS
    ============================================================ */
 .backends-grid { display: grid; gap: 16px; }

@@ -439,7 +439,81 @@ function computeConfigPatch(base, target) {
   }
   return out;
 }
-function routerPanel()    { return { init() { /* see Task 12 */ } }; }
+function routerPanel() {
+  return {
+    loading: true,
+    error: null,
+    config: null,
+    draft: null,
+    backendsLive: null,
+    unsubscribe: null,
+
+    async init() {
+      try {
+        const res = await adminFetch("/admin/config");
+        this.config = await res.json();
+        this.draft = JSON.parse(JSON.stringify(this.config));
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        this.loading = false;
+      }
+      this.unsubscribe = subscribeBackends(s => { this.backendsLive = s.data; });
+    },
+    destroy() { if (this.unsubscribe) this.unsubscribe(); },
+
+    selectableBackends() {
+      if (!this.backendsLive || !Array.isArray(this.backendsLive.data)) return [];
+      const out = [];
+      for (const b of this.backendsLive.data) {
+        if (b.reachable) out.push(b.id);
+      }
+      return out;
+    },
+
+    /** Hard-coded set of known backends — the server's router schema enumerates these. */
+    allBackends() {
+      return ["claude", "gemini", "lmstudio", "ollama"];
+    },
+
+    modelsForBackend(backendId) {
+      if (!this.backendsLive || !Array.isArray(this.backendsLive.data)) return [];
+      const b = this.backendsLive.data.find(x => x.id === backendId);
+      if (!b || !Array.isArray(b.models)) return [];
+      return [...new Set(b.models.map(m => m.id || m))].sort();
+    },
+
+    addEffortMapping(backendId) {
+      const router = this.draft.router || (this.draft.router = {});
+      const map = router.reasoningEffortMap || (router.reasoningEffortMap = {});
+      const backendMap = map[backendId] || (map[backendId] = {});
+      // Find a tier (low / medium / high) that is not yet bound.
+      const tiers = ["low", "medium", "high"];
+      const free = tiers.find(t => !(t in backendMap));
+      if (!free) return; // all three tiers already mapped
+      backendMap[free] = "";
+    },
+
+    removeEffortMapping(backendId, tier) {
+      const map = this.draft.router && this.draft.router.reasoningEffortMap;
+      if (!map || !map[backendId]) return;
+      delete map[backendId][tier];
+    },
+
+    async save() {
+      const patch = computeConfigPatch(this.config, this.draft);
+      const res = await adminFetch("/admin/config", { method: "PATCH", body: JSON.stringify(patch) });
+      if (res.ok) {
+        this.config = JSON.parse(JSON.stringify(this.draft));
+      } else {
+        const b = await res.json().catch(() => ({}));
+        this.error = (b.error && b.error.message) || `HTTP ${res.status}`;
+      }
+    },
+    discard() { this.draft = JSON.parse(JSON.stringify(this.config)); },
+    isDirty() { return JSON.stringify(this.config) !== JSON.stringify(this.draft); },
+  };
+}
 function generalPanel()   { return { init() { /* see Task 13 */ } }; }
 function archivePanel()   { return { init() { /* see Task 14 */ } }; }
 

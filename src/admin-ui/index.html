@@ -218,7 +218,64 @@
               </div>
             </template>
           </section>
-          <section x-show="activePanel === 'router'"    x-data="routerPanel()"      x-init="init()"></section>
+          <section x-show="activePanel === 'router'" x-data="routerPanel()" x-init="init()" x-destroy="destroy()">
+            <template x-if="loading"><p class="muted">Loading…</p></template>
+            <template x-if="error"><p class="error" x-text="error"></p></template>
+
+            <template x-if="!loading && draft">
+              <div class="glass-card" style="padding: 24px;">
+                <h2>Routing</h2>
+                <div class="form-grid">
+                  <label>Default backend
+                    <select x-model="draft.router.defaultBackend">
+                      <template x-for="b in allBackends()" :key="b">
+                        <option :value="b" x-text="b"></option>
+                      </template>
+                    </select>
+                  </label>
+                  <label>opusPromptTokens
+                    <input type="number" x-model.number="draft.router.thresholds.opusPromptTokens">
+                  </label>
+                  <label>opusToolCount
+                    <input type="number" x-model.number="draft.router.thresholds.opusToolCount">
+                  </label>
+                  <label>sonnetPromptTokens
+                    <input type="number" x-model.number="draft.router.thresholds.sonnetPromptTokens">
+                  </label>
+                </div>
+
+                <h3 style="margin-top: 24px;">Reasoning-effort maps</h3>
+                <template x-for="bid in allBackends()" :key="bid">
+                  <div class="effort-map-block">
+                    <header><strong x-text="bid"></strong>
+                      <button type="button" class="ghost" @click="addEffortMapping(bid)">
+                        <span x-html="ICONS.plus"></span> Add mapping
+                      </button>
+                    </header>
+                    <template x-for="(modelId, tier) in (draft.router.reasoningEffortMap && draft.router.reasoningEffortMap[bid]) || {}" :key="bid + ':' + tier">
+                      <div class="effort-row">
+                        <span class="muted" x-text="tier"></span>
+                        <select x-model="draft.router.reasoningEffortMap[bid][tier]">
+                          <option value="">(choose model)</option>
+                          <template x-for="m in modelsForBackend(bid)" :key="m">
+                            <option :value="m" x-text="m"></option>
+                          </template>
+                        </select>
+                        <button type="button" class="danger" @click="removeEffortMapping(bid, tier)">
+                          <span x-html="ICONS.trash"></span>
+                        </button>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <footer class="save-bar" x-show="isDirty()" style="margin-top: 24px;">
+                  <button type="button" class="ghost" @click="discard()">Discard</button>
+                  <button type="button" class="primary" @click="save()">Save changes</button>
+                </footer>
+              </div>
+            </template>
+          </section>
           <section x-show="activePanel === 'general'"   x-data="generalPanel()"     x-init="init()"></section>
           <section x-show="activePanel === 'archive'"   x-data="archivePanel()"     x-init="init()"></section>
         </main>
