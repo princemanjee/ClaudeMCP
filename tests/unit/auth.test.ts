@@ -51,6 +51,22 @@ describe("checkAuth", () => {
     ).toBe(false);
   });
 
+  it("accepts bearer with lowercase scheme (RFC 7235 case-insensitive)", () => {
+    expect(
+      checkAuth(req({ headers: { authorization: `bearer ${apiKey}` } }), apiKey)
+    ).toBe(true);
+  });
+
+  it("accepts BEARER with uppercase scheme (RFC 7235 case-insensitive)", () => {
+    expect(
+      checkAuth(req({ headers: { authorization: `BEARER ${apiKey}` } }), apiKey)
+    ).toBe(true);
+  });
+
+  it("rejects empty ?key= query parameter", () => {
+    expect(checkAuth(req({ query: { key: "" } }), apiKey)).toBe(false);
+  });
+
   it("comparison is constant-time-shaped (same length wrong key still false)", () => {
     const wrong = apiKey.replace(/.$/, "X");
     expect(checkAuth(req({ headers: { "x-api-key": wrong } }), apiKey)).toBe(false);

@@ -1,5 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 
+// Express req.query is actually ParsedQs (nested objects) — callers from Express
+// routes may need to narrow or cast before passing as AuthCarrier.
 export interface AuthCarrier {
   headers: Record<string, string | string[] | undefined>;
   query: Record<string, string | string[] | undefined>;
@@ -30,7 +32,7 @@ function extractKey(carrier: AuthCarrier): string | undefined {
   const auth = pickFirst(carrier.headers["authorization"]);
   if (auth) {
     const [scheme, token] = auth.split(/\s+/, 2);
-    if (scheme === "Bearer" && token) return token;
+    if (scheme && scheme.toLowerCase() === "bearer" && token) return token;
   }
 
   const query = pickFirst(carrier.query["key"]);
