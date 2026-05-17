@@ -1,120 +1,208 @@
 # ClaudeMCP
 
-An MCP (Model Context Protocol) server that exposes the locally installed Claude Code CLI as MCP tools, so any MCP-speaking client (Agent Zero, custom agents, IDE integrations) can call Claude without holding a separate Anthropic API key.
+**A multi-backend local gateway for Claude, Gemini, LM Studio, and Ollama.**
 
-The trick: Claude Code's headless mode (`claude -p`) reuses the Claude Max subscription authentication already stored on disk by the CLI. Wrapping it as an MCP server therefore exposes that subscription to other tools at no additional API cost. If you already pay for Claude Max, this turns one subscription into the engine that powers every agentic tool on your machine.
+One process. One configuration. Four backends. Three API protocols. Pick the model and the protocol your client speaks, and the gateway routes it to whichever LLM you have available locally or via subscription.
 
-## What you get
+ClaudeMCP started as a thin MCP wrapper around the Claude Code CLI so that other agentic tools could use Claude without paying for a separate Anthropic API key on top of an existing Claude Max subscription. The current version generalizes that idea to a full local LLM gateway. The original use case still works (Claude Code CLI usage with no extra API cost), and now sits alongside Gemini CLI usage, local model serving via LM Studio, and Ollama, all addressable through whichever API protocol your client speaks.
 
-Two MCP tools, designed around the two ways agents actually use a smart LLM:
+## Why this exists
 
-### `claude_ask` — stateless smart LLM
+Three problems this is built to solve:
 
-A fast, sandboxed chat-completion endpoint. No file access, no shell, no session memory. Use this when an agent needs Claude to reason about a prompt and return a structured answer without touching the filesystem.
+**One.** You pay for Claude Max or a Gemini subscription, and your agentic tools want to charge you again to use the same models via API. Wrapping the CLI in a local server reuses the subscription auth and eliminates the double-billing.
 
-```ts
-{
-  prompt: string,
-  inReplyToLogId?: string
-}
-```
+**Two.** You have local models running in Ollama or LM Studio and you want them to be addressable through the same client code that already talks to cloud APIs. Speaking the Anthropic, Gemini, and OpenAI protocols natively means existing client SDKs work unchanged.
 
-Returns text content plus a log ID and duration metadata. Internally invokes `claude -p "<prompt>" --output-format json --allowed-tools ""` so Claude is fully sandboxed.
+**Three.** You want to mix and match. Send the easy stuff to a local Ollama instance for free. Send the hard reasoning to Claude. Send vision tasks to Gemini. Have all of it look like one endpoint to your application.
 
-### `claude_task` — stateful sub-agent
+## Backends
 
-A full-capability delegate. Use this when you want to hand Claude a real task inside a working directory with tool access. Supports three session modes:
+| Backend | Access | Notes |
+| --- | --- | --- |
+| **Claude** | Via `claude` CLI (Claude Code) | Reuses Claude Max subscription auth on disk. No separate API key required. Supports streaming, tool use, and stateful sessions. |
+| **Gemini** | Via `gemini` CLI | Same pattern as Claude. Reuses CLI auth. Streaming-capable. |
+| **LM Studio** | HTTP (`OpenAI-compatible`) | Multi-instance support. Default port 1234. Per-instance priority and timeout. |
+| **Ollama** | HTTP (native `/api/*` or `/v1/*` OpenAI-compatible) | Multi-instance support. Default port 11434. Configurable per instance. |
 
-- `stateless` (every call is fresh)
-- `session` (resume from a specific `sessionId`)
-- `auto-last` (continue from wherever the last call left off)
+LM Studio and Ollama can each be configured with multiple instances. For example, a local Ollama for fast cheap models and a remote Ollama on a workstation across the LAN for larger models. Address them with `ollama:local/llama-3.1-8b` or `ollama:remote-workstation/llama-3.1-70b`.
 
-```ts
-{
-  prompt: string,
-  workDir?: string,
-  sessionMode?: "stateless" | "session" | "auto-last",
-  sessionId?: string,
-  allowedTools?: string,
-  inReplyToLogId?: string
-}
-```
+## API protocols served
 
-Sessions are persisted to a file-backed store (`data/sessions.json`) so continuity survives server restarts.
+Point any of the following kinds of clients at your local ClaudeMCP server and they will work without code changes:
 
-## Bonus: OpenAI-compatible shim
+- **Anthropic Messages API.** Clients that hit `/v1/messages` and expect `x-api-key` headers and Claude-style request shapes. The gateway translates to and from the normalized internal model for any backend.
+- **Gemini API.** Clients that hit `/v1beta/models/<model>:generateContent` and expect `x-goog-api-key` headers or `?key=` query parameters.
+- **OpenAI-compatible Chat Completions.** Clients that hit `/v1/chat/completions` with `Authorization: Bearer <key>`.
+- **MCP over SSE.** The original transport. Useful for Agent Zero and other MCP-speaking agents.
 
-There is also an OpenAI-compatible API shim (in `dist/openaiShim/`) that translates OpenAI Chat Completions requests into Claude calls and back. Tools and libraries that expect the OpenAI API format can point at this server and use Claude instead, including streaming. This makes ClaudeMCP useful as a drop-in cost reducer for anything that already integrates with `gpt-4` or similar via the OpenAI client SDK.
+The shims (in `src/anthropicShim/`, `src/geminiShim/`, and the OpenAI handling in `src/backends/openaiCompatClient.ts`) translate each protocol's request and response shapes into and out of a single normalized representation.
 
 ## Architecture
 
-Single Node.js / TypeScript process. Express HTTP server. MCP-over-SSE transport (chosen because Agent Zero typically runs in Docker while the server runs on the host, so stdio is not enough). JSON-lines async logging with a write queue. Zod-validated configuration.
+The architecture is built around two normalized types:
 
-Isolation rule: `claudeRunner.ts` is the only module that touches the Claude CLI. If Claude Code changes its flags or output format, that is the only file that needs to change.
+`NormalizedRequest` is a backend-agnostic request shape (system prompt, messages with typed content blocks, tools, tool choice, sampling parameters, stop sequences). It is modeled on the Anthropic Messages API shape so translators can pass content blocks through without renaming.
+
+`NormalizedEvent` is the streaming-event union (message_start, text_delta, thinking_delta, tool_use_start, tool_use_delta, tool_use_stop, message_stop with usage). Backends emit these as async iterables, and the API-specific shims translate them into Anthropic SSE, Gemini SSE, or OpenAI delta formats.
+
+Each backend implements the same interface:
+
+```typescript
+interface Backend {
+  readonly id: BackendId;
+  capabilitiesFor(model: string): BackendCapabilities;
+  listModels(): Promise<ModelDescriptor[]>;
+  invoke(req: NormalizedRequest): AsyncIterable<NormalizedEvent>;
+  countTokens(req: NormalizedRequest): Promise<number>;
+  embed?(req: NormalizedEmbeddingRequest): Promise<NormalizedEmbeddingResponse>;
+}
+```
+
+The capability matrix matters because not every model in a backend supports every feature. The gateway queries `capabilitiesFor(model)` to decide whether to advertise tool use, vision, thinking mode, native cache control, native stop sequences, or embeddings support for a given request.
 
 ```
 ClaudeMCP/
-├── dist/                       # Compiled JavaScript
-│   ├── bin.js                  # CLI entry point
-│   ├── server.js               # Express + MCP server
-│   ├── claudeRunner.js         # Single-source-of-truth wrapper around `claude`
-│   ├── claudeStreamRunner.js   # Streaming variant for SSE responses
-│   ├── sessionStore.js         # File-backed session persistence
-│   ├── config.js               # Zod-validated config loader
-│   ├── logger.js               # JSON-lines async logger
-│   ├── tools/
-│   │   ├── claudeAsk.js        # claude_ask MCP tool
-│   │   └── claudeTask.js       # claude_task MCP tool
-│   └── openaiShim/             # OpenAI-compatible translation layer
-├── data/                       # File-backed session store (gitignored)
-├── docs/superpowers/specs/     # Design specifications
+├── src/
+│   ├── bin.ts                  # Entry point, CLI argument parsing
+│   ├── server.ts               # Express HTTP server, route registration
+│   ├── config.ts               # Zod-validated config loader
+│   ├── auth.ts                 # Shared API key authentication
+│   ├── modelRouter.ts          # Model name to backend identification
+│   ├── tokenEstimator.ts       # Heuristic token counting
+│   ├── responseCache.ts        # Response caching (in-memory + disk)
+│   ├── fileStore.ts            # Multipart file storage with TTL
+│   ├── archive.ts              # SQLite archive of requests and responses
+│   ├── admin/                  # Admin UI handlers
+│   ├── backends/
+│   │   ├── types.ts            # Backend interface and normalized types
+│   │   ├── registry.ts         # Backend registry and lookup
+│   │   ├── claudeBackend.ts    # Claude CLI backend
+│   │   ├── geminiBackend.ts    # Gemini CLI backend
+│   │   ├── lmstudioBackend.ts  # LM Studio HTTP backend (multi-instance)
+│   │   └── openaiCompatClient.ts  # Shared OpenAI-compatible client (used by Ollama too)
+│   ├── runners/                # Process spawning for CLI backends
+│   │   ├── claudeRunner.ts
+│   │   ├── claudeStreamRunner.ts
+│   │   ├── geminiRunner.ts
+│   │   └── geminiStreamRunner.ts
+│   ├── anthropicShim/          # Anthropic Messages API translation
+│   │   ├── messages.ts
+│   │   ├── countTokens.ts
+│   │   ├── files.ts
+│   │   ├── models.ts
+│   │   ├── requestTranslator.ts
+│   │   ├── responseTranslator.ts
+│   │   ├── errors.ts
+│   │   └── types.ts
+│   └── geminiShim/             # Gemini API translation
+│       ├── generateContent.ts
+│       ├── modelPath.ts
+│       ├── countTokens.ts
+│       ├── files.ts
+│       ├── models.ts
+│       ├── requestTranslator.ts
+│       ├── responseTranslator.ts
+│       ├── errors.ts
+│       └── types.ts
+├── tests/                      # Vitest test suite
+├── configs/
+│   ├── default.json
+│   └── example.json            # Annotated example with every knob
+├── data/                       # Sessions, file store, response cache, archive (gitignored)
 ├── logs/                       # JSON-lines logs (gitignored)
-├── scripts/                    # Helper scripts (Agent Zero config, LAN access)
+├── scripts/                    # Setup helpers
+├── package.json
 └── README.md
 ```
 
-## Scope and non-goals
+## Model routing
 
-This is a personal-use tool, intentionally scoped narrow. To be honest about what it is not:
+Clients address models in any of these ways. The router resolves them deterministically.
 
-- It is **not** intended to be exposed to the public internet or redistributed to third parties. The MCP server binds to localhost (or LAN if you opt in via `scripts/setup-lan-access.ps1`).
-- It is **not** a multi-user system. There is no auth, no quotas, no rate limiting. One user, one machine.
-- It does **not** replicate the full Claude Code interactive TUI. No permission prompts, no chat history UI.
-- It does **not** rotate logs. Use `logrotate` or equivalent if you care about that.
+| Pattern | Example | Routes to |
+| --- | --- | --- |
+| Prefix override (explicit) | `lmstudio/llama-3.1-70b` | The named backend, that model. |
+| Prefix override with instance | `ollama:remote-workstation/mixtral` | A specific instance of a multi-instance backend. |
+| Anthropic model ID | `claude-sonnet-4-5` | Claude backend. |
+| Google model ID | `gemini-1.5-pro` | Gemini backend. |
+| Bare alias for Claude | `opus`, `sonnet`, `haiku` | Claude backend, treated as the latest version. |
+| Bare alias for Gemini | `pro`, `flash`, `flash-lite` | Gemini backend, treated as the latest version. |
+| CLI sentinel | `claude-code-cli`, `gemini-cli` | The specific CLI invocation, useful when you want CLI behavior rather than API behavior. |
+| Sentinel | `auto`, empty string | The configured default backend. |
+| Anything else | (any other model name) | Looked up in the registry of discovered local models. |
 
-The default ships with `--dangerously-skip-permissions` enabled. That is a deliberate choice for personal use. Anyone considering broader deployment should re-evaluate that default.
+Local backends (LM Studio, Ollama) are re-probed every `router.localProbeIntervalMs` milliseconds to keep the registry current as you load and unload models.
+
+## Features beyond protocol translation
+
+- **API key auth.** A shared key for all clients. Sent via `x-api-key`, `Authorization: Bearer`, `x-goog-api-key`, or `?key=` query parameter, depending on which protocol the client speaks. One auth, four header conventions.
+- **Response cache.** In-memory plus disk-backed. Configurable TTL and entry count.
+- **Archive.** SQLite-backed archive of requests and responses with zstd compression at a configurable level. Useful for debugging, auditing, and downstream analysis.
+- **File store.** Multipart file uploads handled via Busboy, persisted with TTL and a configurable total-size budget. Eviction kicks in when the file store exceeds the budget after a TTL pass.
+- **Embeddings.** Supported for backends that implement them; a legacy direct-passthrough config knob exists for cases where you want to bypass the registry.
+- **Admin UI.** Localhost-bound by default with session TTL. Toggle off in config if you do not want it exposed even to localhost.
+- **Tests.** Vitest setup with HTTP integration tests via supertest.
+
+## Configuration
+
+`configs/example.json` is the annotated reference. Every knob has a comment in the `_comments` block. The main top-level sections are:
+
+- `apiKey` (required, shared across all clients)
+- `claude`, `gemini` (enabled flag, CLI command, priority, timeout)
+- `lmstudio`, `ollama` (enabled flag, list of instances, native API toggle for Ollama)
+- `router` (default backend, local probe interval)
+- `files`, `cache`, `archive` (TTLs, size limits, paths)
+- `embeddings` (legacy passthrough config)
+- `adminUi` (enabled, bindLocalhost, session TTL)
+
+Each backend has a `priority` value. Default backend is whatever is set in `router.defaultBackend`; priorities are used in fallback and selection logic.
 
 ## Prerequisites
 
-- Windows 11, macOS, or Linux host. (Originally developed on Windows 11; the `scripts/` directory has PowerShell helpers.)
 - Node.js 20 or later.
-- Claude CLI installed on PATH and authenticated to a Claude Max subscription.
-- An MCP-speaking client to consume the server (Agent Zero, a custom integration, or anything else that speaks MCP-over-SSE).
+- For Claude backend: Claude CLI on PATH, authenticated to your Claude Max subscription.
+- For Gemini backend: Gemini CLI on PATH, authenticated.
+- For LM Studio backend: LM Studio running with the OpenAI-compatible server enabled (default port 1234).
+- For Ollama backend: Ollama running (default port 11434). Native or OpenAI-compatible mode supported.
+
+Any backend can be disabled in config if you do not have it available.
 
 ## Quickstart
 
 ```bash
-# Install dependencies
+# Install
 npm install
 
-# Start the server
-node dist/bin.js
+# Copy example config and edit
+cp configs/example.json configs/default.json
+# Edit configs/default.json to set apiKey and enable the backends you have
+
+# Run in dev mode (TypeScript directly via tsx)
+npm run dev
+
+# Or build and run compiled
+npm run build
+npm start
+
+# Tests
+npm test
 ```
 
-The server starts on `http://localhost:<port>` (configurable). Point your MCP client at the SSE endpoint and the two tools will be available.
+The server starts on the configured port. Point your client at it using whichever protocol it already speaks.
 
-The `scripts/configure-agent-zero.sh` helper sets up Agent Zero specifically. The `scripts/setup-lan-access.ps1` (and `remove-lan-access.ps1`) scripts open and close LAN access for cases where your MCP client lives on another machine in your local network.
+## Scope notes
 
-## Design documentation
+This is designed for **personal use or trusted small-team local deployments**. It now has API key authentication, which means it can reasonably sit behind a reverse proxy on your LAN if that fits your use case. It still does not aim to be a multi-tenant SaaS gateway, and it does not implement rate limiting, quotas, or per-user accounting.
 
-The full design spec is at `docs/superpowers/specs/2026-04-18-claude-mcp-design.md`. It covers the goals, non-goals, architectural constraints, tool schemas, session semantics, logging format, and security trade-offs in more depth than this README.
+The default Claude CLI invocation can be configured to include `--dangerously-skip-permissions`. That is the user's choice for personal-use convenience. Anyone considering broader deployment should re-evaluate that default and the rest of the security posture (auth, network exposure, logging discipline) for their context.
 
 ## Related work
 
 Part of a broader toolset for AI engineering workflows:
 
-- **[AIOrchBuilder](https://github.com/princemanjee/AIOrchBuilder)** is the multi-agent orchestration framework that uses MCP servers like this one as components in a larger agent system.
-- **[EngineeredPromptLibrary](https://github.com/princemanjee/EngineeredPromptLibrary)** is the prompt and context engineering archive that informed both the tool design and the schema choices here.
+- **[AIOrchBuilder](https://github.com/princemanjee/AIOrchBuilder)** is the multi-agent orchestration framework that uses gateways like this one as components.
+- **[EngineeredPromptLibrary](https://github.com/princemanjee/EngineeredPromptLibrary)** is the prompt and context engineering archive that informed the schema and routing decisions here.
 
 ## Author
 
