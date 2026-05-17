@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ClaudeMCP Admin</title>
+  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI+PGNpcmNsZSBjeD0iOCIgY3k9IjgiIHI9IjciIGZpbGw9IiNlOTFlNjMiLz48L3N2Zz4=" />
+  <!-- Bootstrap theme attribute before paint to prevent FOUC. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("claudemcp-theme");
+        if (!t) {
+          t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) { /* private mode */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./themes/light.css" />
+  <link rel="stylesheet" href="./themes/dark.css" />
+  <!--
+    Alpine.js pinned at 3.15.12 from jsDelivr with SRI hash. To bump:
+      curl -sL https://cdn.jsdelivr.net/npm/alpinejs@<VER>/dist/cdn.min.js \
+        | openssl dgst -sha384 -binary | openssl base64 -A
+    Prepend "sha384-" and paste into the integrity attribute below.
+  -->
+  <script
+    defer
+    src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.12/dist/cdn.min.js"
+    integrity="sha384-pb6hrQvo4s23cEUFtj0CZkzGE3jyK3pj26RIupXXxhSrrcUA/Cn0lZgcCrGH0t6L"
+    crossorigin="anonymous"
+  ></script>
+  <script src="./app.js"></script>
+</head>
+<body>
+  <div id="app" x-data="app()" x-cloak>
+
+    <!-- Login screen (shown until x-show="!isLoggedIn"). -->
+    <template x-if="!isLoggedIn">
+      <main class="login-shell">
+        <div class="glass-card login-card">
+          <h1>ClaudeMCP</h1>
+          <p class="muted">Sign in with your admin API key.</p>
+          <form @submit.prevent="login()">
+            <label for="apikey">API Key</label>
+            <input id="apikey" type="password" x-model="apiKeyInput" autocomplete="current-password" autofocus />
+            <button type="submit" class="primary" :disabled="loggingIn" x-text="loggingIn ? 'Signing in…' : 'Sign in'"></button>
+            <p class="error" x-show="loginError" x-text="loginError"></p>
+          </form>
+          <button type="button" class="ghost theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'">
+            <span x-html="theme === 'dark' ? ICONS.sun : ICONS.moon"></span>
+          </button>
+        </div>
+      </main>
+    </template>
+
+    <!-- Authenticated shell. -->
+    <template x-if="isLoggedIn">
+      <div class="app-shell">
+
+        <!-- Top bar (sticky). -->
+        <header class="top-bar glass-card">
+          <div class="brand">
+            <span class="brand-mark" x-html="ICONS.logo"></span>
+            <span class="brand-text">ClaudeMCP</span>
+          </div>
+          <h1 class="page-title" x-text="panelTitle()"></h1>
+          <nav class="backend-health">
+            <template x-for="b in backendHealthPills" :key="b.name">
+              <span class="status-pill" :class="'status-' + b.color">
+                <span class="dot"></span>
+                <span x-text="b.name"></span>
+              </span>
+            </template>
+          </nav>
+          <div class="top-bar-actions">
+            <button type="button" class="ghost theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'">
+              <span x-html="theme === 'dark' ? ICONS.sun : ICONS.moon"></span>
+            </button>
+            <button type="button" class="ghost" @click="logout()" title="Sign out">
+              <span x-html="ICONS.logout"></span>
+            </button>
+          </div>
+        </header>
+
+        <!-- Sidebar. -->
+        <aside class="sidebar glass-card">
+          <template x-for="p in panels" :key="p.id">
+            <button
+              class="nav-item"
+              :class="{ active: activePanel === p.id }"
+              @click="setPanel(p.id)"
+            >
+              <span class="nav-icon" x-html="ICONS[p.icon]"></span>
+              <span class="nav-label" x-text="p.label"></span>
+            </button>
+          </template>
+        </aside>
+
+        <!-- Main content. One panel visible at a time. -->
+        <main class="content">
+          <section x-show="activePanel === 'dashboard'" x-data="dashboardPanel()"   x-init="init()"></section>
+          <section x-show="activePanel === 'backends'"  x-data="backendsPanel()"    x-init="init()"></section>
+          <section x-show="activePanel === 'router'"    x-data="routerPanel()"      x-init="init()"></section>
+          <section x-show="activePanel === 'general'"   x-data="generalPanel()"     x-init="init()"></section>
+          <section x-show="activePanel === 'archive'"   x-data="archivePanel()"     x-init="init()"></section>
+        </main>
+
+      </div>
+    </template>
+  </div>
+</body>
+</html>
