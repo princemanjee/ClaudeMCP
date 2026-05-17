@@ -235,7 +235,7 @@ export function createMessagesHandler(deps: MessagesHandlerDeps): RequestHandler
           durationMs: 0,
           inputTokens: null,
           outputTokens: null,
-          requestBody: body,
+          requestBody: { raw: body, normalized },
           responseBody: { ...hit.body, _cache_hit: true }
         });
         return;
@@ -319,7 +319,7 @@ export function createMessagesHandler(deps: MessagesHandlerDeps): RequestHandler
       durationMs: Date.now() - started,
       inputTokens: null,
       outputTokens: null,
-      requestBody: body,
+      requestBody: { raw: body, normalized },
       responseBody: finalBody ?? null
     });
   };
