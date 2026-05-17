@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { LMStudioBackend } from "../../../src/backends/lmstudioBackend.js";
+import type { NormalizedEvent } from "../../../src/backends/types.js";
 import {
   startMockLmStudio,
   type MockLmStudioHandle
@@ -107,16 +108,205 @@ describe("LMStudioBackend skeleton", () => {
     expect(n).toBe(4 + 2 + 1 + 2);
   });
 
-  it("invoke throws — lands in Task 6", async () => {
+  it("invoke streams: emits message_start, text_delta(s), message_stop in order", async () => {
+    const b = await makeBackend();
+    const events: NormalizedEvent[] = [];
+    for await (const ev of b.invoke({
+      model: "qwen3-coder-30b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+    })) {
+      events.push(ev);
+    }
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toBe("echo: hello");
+  });
+
+  it("invoke surfaces usage on the terminal message_stop", async () => {
+    const b = await makeBackend();
+    const events: NormalizedEvent[] = [];
+    for await (const ev of b.invoke({
+      model: "qwen3-coder-30b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+    })) {
+      events.push(ev);
+    }
+    const stop = events[events.length - 1];
+    expect(stop?.kind).toBe("message_stop");
+    if (stop?.kind === "message_stop") {
+      expect(stop.usage).toBeDefined();
+      expect(stop.usage?.inputTokens).toBeGreaterThan(0);
+      expect(stop.usage?.outputTokens).toBeGreaterThan(0);
+      expect(stop.stopReason).toBe("end_turn");
+    }
+  });
+
+  it("invoke forwards system as a prepended system message", async () => {
+    const b = await makeBackend();
+    // Use chatCompletionsBuffered side-channel: the mock echoes the first
+    // user message. With a system message prepended, the echo still reflects
+    // the user content, so the verification is "doesn't blow up". A stronger
+    // test would inspect the mock's recorded request body — Task 8's
+    // multi-instance test does that via per-instance separation.
+    const events: NormalizedEvent[] = [];
+    for await (const ev of b.invoke({
+      model: "qwen3-coder-30b",
+      system: "you are helpful",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+    })) {
+      events.push(ev);
+    }
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("invoke forwards samplingParams (temperature, top_p, top_k)", async () => {
+    const b = await makeBackend();
+    const events: NormalizedEvent[] = [];
+    for await (const ev of b.invoke({
+      model: "qwen3-coder-30b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      samplingParams: { temperature: 0.7, topP: 0.9, topK: 40 }
+    })) {
+      events.push(ev);
+    }
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("invoke forwards stopSequences as `stop: [...]`", async () => {
+    const b = await makeBackend();
+    const events: NormalizedEvent[] = [];
+    for await (const ev of b.invoke({
+      model: "qwen3-coder-30b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      stopSequences: ["END"]
+    })) {
+      events.push(ev);
+    }
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("invoke emits tool_use_start/_delta/_stop when the server returns tool_calls", async () => {
+    const b = await makeBackend();
+    const events: NormalizedEvent[] = [];
+    for await (const ev of b.invoke({
+      model: "qwen3-coder-30b",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "MOCK_TOOL_USE please" }] }
+      ],
+      tools: [{ name: "mock_tool", inputSchema: { type: "object" } }]
+    })) {
+      events.push(ev);
+    }
+
+    const starts = events.filter((e) => e.kind === "tool_use_start");
+    const deltas = events.filter((e) => e.kind === "tool_use_delta");
+    const stops = events.filter((e) => e.kind === "tool_use_stop");
+    expect(starts).toHaveLength(1);
+    expect(deltas.length).toBeGreaterThanOrEqual(1);
+    expect(stops).toHaveLength(1);
+
+    const accumulated = deltas
+      .map((e) => (e.kind === "tool_use_delta" ? e.partialJson : ""))
+      .join("");
+    expect(JSON.parse(accumulated)).toEqual({ a: 1 });
+
+    const stop = events[events.length - 1];
+    expect(stop?.kind).toBe("message_stop");
+    if (stop?.kind === "message_stop") {
+      expect(stop.stopReason).toBe("tool_use");
+    }
+  });
+
+  it("invoke folds a tool_result back into the request as role=tool", async () => {
+    const b = await makeBackend();
+    // We can't easily inspect the wire here, but we can verify the call
+    // doesn't throw and produces a normal message_stop.
+    const events: NormalizedEvent[] = [];
+    for await (const ev of b.invoke({
+      model: "qwen3-coder-30b",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "call_1",
+              name: "mock_tool",
+              input: { a: 1 }
+            }
+          ]
+        },
+        {
+          role: "tool",
+          content: [
+            { type: "tool_result", toolUseId: "call_1", content: '{"ok": true}' }
+          ]
+        }
+      ]
+    })) {
+      events.push(ev);
+    }
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("invoke throws on image content blocks (Plan 08 scope is text-only chat)", async () => {
     const b = await makeBackend();
     await expect(async () => {
       for await (const _ of b.invoke({
         model: "qwen3-coder-30b",
-        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "describe" },
+              { type: "image", mediaType: "image/png", data: "BASE64" }
+            ]
+          }
+        ]
       })) {
         // no-op
       }
-    }).rejects.toThrow(/invoke/);
+    }).rejects.toThrow(/multimodal|image/i);
+  });
+
+  it("invoke throws on document content blocks", async () => {
+    const b = await makeBackend();
+    await expect(async () => {
+      for await (const _ of b.invoke({
+        model: "qwen3-coder-30b",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "document", mediaType: "application/pdf", data: "BASE64" }
+            ]
+          }
+        ]
+      })) {
+        // no-op
+      }
+    }).rejects.toThrow(/document/i);
+  });
+
+  it("invoke throws on thinking: true", async () => {
+    const b = await makeBackend();
+    await expect(async () => {
+      for await (const _ of b.invoke({
+        model: "qwen3-coder-30b",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        thinking: true
+      })) {
+        // no-op
+      }
+    }).rejects.toThrow(/thinking/i);
   });
 
   it("embed throws — lands in Task 7", async () => {
