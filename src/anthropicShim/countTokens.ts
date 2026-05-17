@@ -48,7 +48,7 @@ export function createCountTokensHandler(
     const body = req.body as AnthropicMessagesRequest;
     let normalized;
     try {
-      normalized = anthropicRequestToNormalized(body);
+      normalized = await anthropicRequestToNormalized(body);
     } catch (e) {
       if (e instanceof ShimRequestError) {
         res.status(e.status).json(invalidRequestError(e.message));
