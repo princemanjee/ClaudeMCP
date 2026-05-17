@@ -1,6 +1,7 @@
 import type { NormalizedEvent } from "../backends/types.js";
 import type {
   AnthropicMessagesResponse,
+  AnthropicResponseContentBlock,
   AnthropicStopReason
 } from "./types.js";
 
@@ -47,8 +48,9 @@ export async function* normalizedEventsToSSE(
 ): AsyncIterable<string> {
   let startEmitted = false;
   // Track which content-block indexes have been opened so we can emit
-  // start/stop pairs as deltas come and go.
-  const openBlocks = new Set<number>();
+  // start/stop pairs as deltas come and go. Value is the block kind so the
+  // synthesized close path can stay symmetrical.
+  const openBlocks = new Map<number, "text" | "tool_use">();
   let stopReason: AnthropicStopReason | null = null;
   let outputTokens = 0;
   let messageStopSent = false;
@@ -82,7 +84,7 @@ export async function* normalizedEventsToSSE(
       const chunk = ensureStart(meta.model);
       if (chunk) yield chunk;
       if (!openBlocks.has(ev.index)) {
-        openBlocks.add(ev.index);
+        openBlocks.set(ev.index, "text");
         yield sse("content_block_start", {
           type: "content_block_start",
           index: ev.index,
@@ -97,11 +99,45 @@ export async function* normalizedEventsToSSE(
       continue;
     }
 
+    if (ev.kind === "tool_use_start") {
+      const chunk = ensureStart(meta.model);
+      if (chunk) yield chunk;
+      openBlocks.set(ev.index, "tool_use");
+      yield sse("content_block_start", {
+        type: "content_block_start",
+        index: ev.index,
+        content_block: { type: "tool_use", id: ev.id, name: ev.name, input: {} }
+      });
+      continue;
+    }
+
+    if (ev.kind === "tool_use_delta") {
+      // No ensureStart — a tool_use_delta without a preceding tool_use_start
+      // is malformed, but tolerate it by treating it as a stale event.
+      if (!openBlocks.has(ev.index)) continue;
+      yield sse("content_block_delta", {
+        type: "content_block_delta",
+        index: ev.index,
+        delta: { type: "input_json_delta", partial_json: ev.partialJson }
+      });
+      continue;
+    }
+
+    if (ev.kind === "tool_use_stop") {
+      if (!openBlocks.has(ev.index)) continue;
+      openBlocks.delete(ev.index);
+      yield sse("content_block_stop", {
+        type: "content_block_stop",
+        index: ev.index
+      });
+      continue;
+    }
+
     if (ev.kind === "message_stop") {
       const chunk = ensureStart(meta.model);
       if (chunk) yield chunk;
       // Close every still-open content block.
-      for (const idx of [...openBlocks].sort((a, b) => a - b)) {
+      for (const idx of [...openBlocks.keys()].sort((a, b) => a - b)) {
         yield sse("content_block_stop", {
           type: "content_block_stop",
           index: idx
@@ -119,10 +155,6 @@ export async function* normalizedEventsToSSE(
       messageStopSent = true;
       return;
     }
-
-    // tool_use_* events are Plan-04 territory. If they arrive here, ignore
-    // them rather than crashing — the request translator already rejected
-    // requests that would have caused them.
   }
 
   // Source ended without an explicit message_stop. Synthesize one so clients
@@ -130,7 +162,7 @@ export async function* normalizedEventsToSSE(
   if (!messageStopSent) {
     const chunk = ensureStart(meta.model);
     if (chunk) yield chunk;
-    for (const idx of [...openBlocks].sort((a, b) => a - b)) {
+    for (const idx of [...openBlocks.keys()].sort((a, b) => a - b)) {
       yield sse("content_block_stop", {
         type: "content_block_stop",
         index: idx
@@ -145,25 +177,48 @@ export async function* normalizedEventsToSSE(
   }
 }
 
+type BlockState =
+  | { kind: "text"; text: string }
+  | { kind: "tool_use"; id: string; name: string; partialJson: string };
+
 /**
  * Buffer the entire event stream and assemble the non-streaming response body.
- * Each content-block index gets its own AnthropicResponseTextBlock; deltas with
- * the same index are concatenated in arrival order.
+ * Each content-block index gets its own block; text deltas with the same
+ * index are concatenated in arrival order, tool_use deltas accumulate
+ * partial_json strings which are parsed at finalize time.
  */
 export async function normalizedEventsToFinalResponse(
   events: AsyncIterable<NormalizedEvent>,
   meta: ResponseMeta
 ): Promise<AnthropicMessagesResponse> {
-  // Index → accumulated text. Map preserves insertion order, which is the
-  // order content blocks first appeared.
-  const blocks = new Map<number, string>();
+  const blocks = new Map<number, BlockState>();
   let stopReason: AnthropicStopReason | null = null;
   let inputTokens = 0;
   let outputTokens = 0;
 
   for await (const ev of events) {
     if (ev.kind === "text_delta") {
-      blocks.set(ev.index, (blocks.get(ev.index) ?? "") + ev.text);
+      const cur = blocks.get(ev.index);
+      if (cur === undefined) {
+        blocks.set(ev.index, { kind: "text", text: ev.text });
+      } else if (cur.kind === "text") {
+        cur.text += ev.text;
+      }
+      // text_delta on a tool_use index is dropped silently — malformed.
+    } else if (ev.kind === "tool_use_start") {
+      blocks.set(ev.index, {
+        kind: "tool_use",
+        id: ev.id,
+        name: ev.name,
+        partialJson: ""
+      });
+    } else if (ev.kind === "tool_use_delta") {
+      const cur = blocks.get(ev.index);
+      if (cur?.kind === "tool_use") {
+        cur.partialJson += ev.partialJson;
+      }
+    } else if (ev.kind === "tool_use_stop") {
+      // No-op for aggregation; the JSON parse happens at finalize time.
     } else if (ev.kind === "message_stop") {
       stopReason = mapStopReason(ev.stopReason);
       if (ev.usage) {
@@ -172,7 +227,33 @@ export async function normalizedEventsToFinalResponse(
       }
     }
     // message_start ignored — meta.model wins
-    // tool_use_* ignored in Plan 03 — request translator rejects upstream
+  }
+
+  const content: AnthropicResponseContentBlock[] = [];
+  // Iterate in index order to match the on-the-wire arrival order.
+  const orderedKeys = Array.from(blocks.keys()).sort((a, b) => a - b);
+  for (const idx of orderedKeys) {
+    const block = blocks.get(idx);
+    if (!block) continue;
+    if (block.kind === "text") {
+      content.push({ type: "text", text: block.text });
+    } else {
+      let parsedInput: unknown;
+      try {
+        parsedInput =
+          block.partialJson.length > 0 ? JSON.parse(block.partialJson) : {};
+      } catch {
+        // Malformed JSON from upstream; surface the raw string so clients
+        // can still see what arrived rather than getting a 500.
+        parsedInput = block.partialJson;
+      }
+      content.push({
+        type: "tool_use",
+        id: block.id,
+        name: block.name,
+        input: parsedInput
+      });
+    }
   }
 
   return {
@@ -180,7 +261,7 @@ export async function normalizedEventsToFinalResponse(
     type: "message",
     role: "assistant",
     model: meta.model,
-    content: Array.from(blocks.values()).map((text) => ({ type: "text", text })),
+    content,
     stop_reason: stopReason,
     stop_sequence: null,
     usage: { input_tokens: inputTokens, output_tokens: outputTokens }
