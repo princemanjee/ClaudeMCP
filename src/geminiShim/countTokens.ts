@@ -58,7 +58,23 @@ export function createCountTokensHandler(
       return;
     }
 
-    const body = req.body as GeminiGenerateContentRequest;
+    // Google SDK (@google/generative-ai) wraps countTokens requests as
+    // `{generateContentRequest: {contents: [...]}}`. The REST API and direct
+    // curl users send the bare `{contents: [...]}` shape. Unwrap one level
+    // when the wrapper is present and the bare form is absent — keeping the
+    // existing translator pathway unchanged.
+    const rawBody = req.body as
+      | (GeminiGenerateContentRequest & {
+          generateContentRequest?: GeminiGenerateContentRequest;
+        })
+      | undefined;
+    const body =
+      rawBody &&
+      typeof rawBody === "object" &&
+      rawBody.contents === undefined &&
+      rawBody.generateContentRequest !== undefined
+        ? rawBody.generateContentRequest
+        : (rawBody as GeminiGenerateContentRequest);
     let normalized;
     try {
       normalized = await geminiRequestToNormalized(body, model, deps.fileStore);

@@ -103,20 +103,20 @@ describe.each(BACKENDS)("Google GenerativeAI SDK x %s backend", (backend) => {
   }, 30000);
 
   // ---- countTokens --------------------------------------------------------
-  // The Google SDK's model.countTokens(...) always wraps the request as
-  // {generateContentRequest: {contents: [...]}}. The Gemini shim's
-  // /v1beta/models/:model[:]countTokens handler only accepts the bare
-  // {contents: [...]} shape and rejects the wrapped form with
-  // "contents is required and must be an array". This is a real shim
-  // limitation surfaced exactly as Plan 13 is designed to surface envelope
-  // drift. Skipped here; documented in plan-13-readme deviations.
+  // The Google SDK's model.countTokens(...) wraps the request as
+  // {generateContentRequest: {contents: [...]}}. The Gemini shim now unwraps
+  // that envelope so the bare {contents} translator path applies (the same
+  // bare shape that direct curl callers use is also still accepted).
 
-  it.skip(
-    "countTokens skipped — Gemini shim does not accept SDK's {generateContentRequest} wrapper",
-    () => {
-      /* See deviations: shim accepts only bare {contents}; SDK wraps. */
-    }
-  );
+  it("countTokens returns {totalTokens} for the SDK's wrapped envelope", async () => {
+    const model = client.getGenerativeModel(
+      { model: modelId },
+      { baseUrl: handle.baseURL }
+    );
+    const result = await model.countTokens("count these tokens please");
+    expect(typeof result.totalTokens).toBe("number");
+    expect(result.totalTokens).toBeGreaterThan(0);
+  }, 30000);
 
   // ---- files lifecycle ----------------------------------------------------
   // The Google SDK's GoogleAIFileManager.uploadFile uses Google's

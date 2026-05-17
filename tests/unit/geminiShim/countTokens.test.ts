@@ -168,4 +168,41 @@ describe("Gemini /v1beta/models/:model:countTokens", () => {
     expect(res.status).toBe(200);
     expect(res.body.totalTokens).toBe(77);
   });
+
+  // Google SDK's `model.countTokens(...)` wraps the request body as
+  // `{generateContentRequest: {contents: [...]}}`. The shim must unwrap one
+  // level so the bare `{contents}` translator path still applies.
+  it("accepts Google SDK's {generateContentRequest: {contents}} envelope", async () => {
+    const app = buildApp({
+      apiKey: "sk-test",
+      backends: [
+        stubBackend({ id: "gemini", models: ["gemini-pro"], countTokensReturn: 17 })
+      ]
+    });
+    const res = await request(app)
+      .post("/v1beta/models/gemini-pro:countTokens")
+      .set("x-goog-api-key", "sk-test")
+      .send({
+        generateContentRequest: {
+          contents: [{ role: "user", parts: [{ text: "hi" }] }]
+        }
+      });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ totalTokens: 17 });
+  });
+
+  it("still accepts bare {contents} after envelope-unwrap fix", async () => {
+    const app = buildApp({
+      apiKey: "sk-test",
+      backends: [
+        stubBackend({ id: "gemini", models: ["gemini-pro"], countTokensReturn: 5 })
+      ]
+    });
+    const res = await request(app)
+      .post("/v1beta/models/gemini-pro:countTokens")
+      .set("x-goog-api-key", "sk-test")
+      .send({ contents: [{ role: "user", parts: [{ text: "hi" }] }] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ totalTokens: 5 });
+  });
 });
