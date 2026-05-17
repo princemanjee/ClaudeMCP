@@ -5,6 +5,8 @@ import type {
   NormalizedEvent,
   NormalizedRequest
 } from "./types.js";
+import { runGeminiStream } from "../runners/geminiStreamRunner.js";
+import type { GeminiStreamOptions } from "../runners/types.js";
 
 export interface GeminiBackendConfig {
   /** Either the executable name (e.g. "gemini") or [executable, ...prefix-args]. */
@@ -129,8 +131,154 @@ export class GeminiBackend implements Backend {
     return sumRequestTokens(req);
   }
 
-  // eslint-disable-next-line require-yield
-  async *invoke(_req: NormalizedRequest): AsyncIterable<NormalizedEvent> {
-    throw new Error("GeminiBackend.invoke() lands in Plan 06 Task 6");
+  async *invoke(
+    req: NormalizedRequest
+  ): AsyncIterable<NormalizedEvent> {
+    this.assertPlan06Scope(req);
+
+    const streamOpts: GeminiStreamOptions = {
+      prompt: this.foldMessagesToPrompt(req),
+      systemPrompt: req.system,
+      model: req.model,
+      temperature: req.samplingParams?.temperature,
+      topP: req.samplingParams?.topP,
+      topK: req.samplingParams?.topK,
+      timeoutMs: this.config.timeoutMs,
+      geminiCommand: this.config.command
+    };
+
+    let startEmitted = false;
+    let textIndex = 0;
+    let textOpen = false;
+
+    for await (const raw of runGeminiStream(streamOpts)) {
+      const ev = raw as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> };
+          finishReason?: string;
+        }>;
+        modelVersion?: string;
+        usageMetadata?: {
+          promptTokenCount?: number;
+          candidatesTokenCount?: number;
+        };
+      };
+
+      const candidate = ev.candidates?.[0];
+
+      if (!startEmitted) {
+        startEmitted = true;
+        yield { kind: "message_start", model: ev.modelVersion ?? req.model };
+      }
+
+      // Emit text deltas for each text part in this chunk.
+      const parts = candidate?.content?.parts ?? [];
+      for (const part of parts) {
+        if (typeof part.text === "string" && part.text.length > 0) {
+          yield { kind: "text_delta", index: textIndex, text: part.text };
+          textOpen = true;
+        }
+      }
+
+      // If this chunk has a finishReason, it's the terminal chunk: emit
+      // message_stop and return.
+      if (candidate?.finishReason !== undefined) {
+        if (textOpen) {
+          textIndex++;
+          textOpen = false;
+        }
+        const usage = ev.usageMetadata
+          ? {
+              inputTokens: ev.usageMetadata.promptTokenCount ?? 0,
+              outputTokens: ev.usageMetadata.candidatesTokenCount ?? 0
+            }
+          : undefined;
+        yield {
+          kind: "message_stop",
+          stopReason: mapFinishReason(candidate.finishReason),
+          usage:
+            usage && usage.inputTokens + usage.outputTokens > 0
+              ? usage
+              : undefined
+        };
+        return;
+      }
+    }
+
+    // Stream ended without an explicit finishReason chunk (e.g. process killed
+    // by timeout). Emit a synthesized message_stop so callers always see one.
+    if (!startEmitted) {
+      yield { kind: "message_start", model: req.model };
+    }
+    yield { kind: "message_stop", stopReason: "error" };
+  }
+
+  // ---- Plan-06 scope helpers ---------------------------------------------
+
+  private assertPlan06Scope(req: NormalizedRequest): void {
+    if (req.tools && req.tools.length > 0) {
+      throw new Error(
+        "GeminiBackend (Plan 06): native tool calling lands in Plan 07"
+      );
+    }
+    if (req.stopSequences && req.stopSequences.length > 0) {
+      throw new Error(
+        "GeminiBackend (Plan 06): stop_sequences land in Plan 07"
+      );
+    }
+    if (req.thinking) {
+      throw new Error(
+        "GeminiBackend (Plan 06): thinking-mode lands in a follow-up plan"
+      );
+    }
+    for (const msg of req.messages) {
+      for (const block of msg.content) {
+        if (block.type === "image" || block.type === "document") {
+          throw new Error(
+            "GeminiBackend (Plan 06): multimodal content lands in Plan 07"
+          );
+        }
+        if (block.type === "tool_use" || block.type === "tool_result") {
+          throw new Error(
+            "GeminiBackend (Plan 06): tool_use/tool_result round-trip lands in Plan 07"
+          );
+        }
+      }
+    }
+  }
+
+  private foldMessagesToPrompt(req: NormalizedRequest): string {
+    const lines: string[] = [];
+    for (const msg of req.messages) {
+      const text = msg.content
+        .map((b) => (b.type === "text" ? b.text : ""))
+        .filter((t) => t.length > 0)
+        .join("\n");
+      if (text.length === 0) continue;
+      lines.push(`${msg.role}: ${text}`);
+    }
+    return lines.join("\n\n");
+  }
+}
+
+function mapFinishReason(
+  geminiReason: string
+):
+  | "end_turn"
+  | "stop_sequence"
+  | "max_tokens"
+  | "tool_use"
+  | "error" {
+  switch (geminiReason) {
+    case "STOP":
+      return "end_turn";
+    case "MAX_TOKENS":
+      return "max_tokens";
+    case "SAFETY":
+    case "RECITATION":
+    case "OTHER":
+      return "error";
+    default:
+      return "end_turn";
   }
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { join, dirname } from "node:path";
 import { GeminiBackend } from "../../../src/backends/geminiBackend.js";
+import type { NormalizedEvent } from "../../../src/backends/types.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("GeminiBackend skeleton", () => {
   function makeBackend(): GeminiBackend {
@@ -84,15 +89,177 @@ describe("GeminiBackend skeleton", () => {
     expect(tokens).toBe(4 + 2 + 1 + 2);
   });
 
-  it("invoke() throws — landed in Task 6", async () => {
-    const backend = makeBackend();
+  it("invoke streams: emits message_start, text_delta(s), message_stop in order", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-flash",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+    })) {
+      events.push(ev);
+    }
+
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+    const deltas = events.filter((e) => e.kind === "text_delta");
+    expect(deltas.length).toBeGreaterThan(0);
+    // Concatenating all text_delta texts reproduces the assistant response.
+    const joined = deltas.map((e) => (e.kind === "text_delta" ? e.text : "")).join("");
+    expect(joined).toBe("echo: user: hello");
+  });
+
+  it("invoke forwards system prompt to the CLI via --system", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-flash",
+      system: "you are helpful",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    })) {
+      events.push(ev);
+    }
+
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toContain("[system:");
+  });
+
+  it("invoke folds multi-turn message history into a single prompt", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-flash",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "text", text: "second" }] }
+      ]
+    })) {
+      events.push(ev);
+    }
+
+    const text = events
+      .filter((e) => e.kind === "text_delta")
+      .map((e) => (e.kind === "text_delta" ? e.text : ""))
+      .join("");
+    expect(text).toContain("user: first");
+    expect(text).toContain("assistant: ok");
+    expect(text).toContain("user: second");
+  });
+
+  it("invoke forwards samplingParams to the CLI (Gemini honors them natively)", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    // mock-gemini doesn't check sampling values, but we verify the invoke path
+    // doesn't throw when they are set, unlike Claude which ignores them per
+    // capability matrix.
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-flash",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      samplingParams: { temperature: 0.7, topP: 0.9, topK: 40 }
+    })) {
+      events.push(ev);
+    }
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("invoke surfaces usage from the final chunk's usageMetadata", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-flash",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+    })) {
+      events.push(ev);
+    }
+    const stop = events[events.length - 1];
+    if (stop?.kind === "message_stop") {
+      expect(stop.usage).toBeDefined();
+      expect(stop.usage?.inputTokens).toBeGreaterThan(0);
+      expect(stop.usage?.outputTokens).toBeGreaterThan(0);
+    } else {
+      throw new Error("expected message_stop as last event");
+    }
+  });
+
+  it("invoke throws on multimodal content (Plan 06 scope is text-only)", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
     await expect(async () => {
       for await (const _ of backend.invoke({
         model: "gemini-flash",
-        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "describe this" },
+              { type: "image", mediaType: "image/png", data: "BASE64" }
+            ]
+          }
+        ]
       })) {
         // no-op
       }
-    }).rejects.toThrow(/invoke/);
+    }).rejects.toThrow(/multimodal/i);
+  });
+
+  it("invoke throws on tools array (Plan 06 scope is no-tools)", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    await expect(async () => {
+      for await (const _ of backend.invoke({
+        model: "gemini-flash",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        tools: [{ name: "calc", inputSchema: {} }]
+      })) {
+        // no-op
+      }
+    }).rejects.toThrow(/tool/i);
+  });
+
+  it("invoke throws on stopSequences (Plan 06 defers to Plan 07)", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    await expect(async () => {
+      for await (const _ of backend.invoke({
+        model: "gemini-flash",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        stopSequences: ["END"]
+      })) {
+        // no-op
+      }
+    }).rejects.toThrow(/stop/i);
   });
 });
