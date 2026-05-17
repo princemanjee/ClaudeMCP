@@ -2,6 +2,75 @@ import spawn from "cross-spawn";
 import treeKill from "tree-kill";
 import type { ClaudeStreamOptions } from "./types.js";
 
+// ---- Stop-sequence cutter -------------------------------------------------
+
+export interface StopSequenceMatch {
+  matched: true;
+  /** Index INTO the chunk passed to feed() where the match starts. */
+  cutAt: number;
+  matchedSequence: string;
+  /**
+   * What the matcher's internal tail buffer holds after this match. The
+   * runner ignores it on a positive match (it kills the child anyway) but
+   * the field is here to keep the public shape symmetrical for tests.
+   */
+  tailForNext: string;
+}
+
+export type StopSequenceFeedResult =
+  | { matched: false }
+  | StopSequenceMatch;
+
+export interface StopSequenceMatcher {
+  feed(chunk: string): StopSequenceFeedResult;
+}
+
+/**
+ * Build a stateful matcher that tracks a rolling tail across feed() calls so
+ * stop sequences split across chunk boundaries are still caught. Pure
+ * factory — no side effects, no IO. Exported for direct unit testing.
+ */
+export function createStopSequenceMatcher(
+  stopSequences: readonly string[]
+): StopSequenceMatcher {
+  const active = stopSequences.filter((s) => s.length > 0);
+  const maxLen = active.reduce((m, s) => Math.max(m, s.length), 0);
+  const tailSize = Math.max(0, maxLen - 1);
+  let tail = "";
+
+  return {
+    feed(chunk: string): StopSequenceFeedResult {
+      if (active.length === 0) {
+        return { matched: false };
+      }
+      const haystack = tail + chunk;
+      let earliest: { idx: number; seq: string } | null = null;
+      for (const seq of active) {
+        const idx = haystack.indexOf(seq);
+        if (idx === -1) continue;
+        if (earliest === null || idx < earliest.idx) {
+          earliest = { idx, seq };
+        }
+      }
+      if (earliest !== null) {
+        // Translate haystack offset back into chunk offset.
+        const cutInChunk = Math.max(0, earliest.idx - tail.length);
+        tail = "";
+        return {
+          matched: true,
+          cutAt: cutInChunk,
+          matchedSequence: earliest.seq,
+          tailForNext: ""
+        };
+      }
+      // No match — retain the trailing (tailSize) chars of haystack for the
+      // next call.
+      tail = haystack.length > tailSize ? haystack.slice(-tailSize) : haystack;
+      return { matched: false };
+    }
+  };
+}
+
 /**
  * Build argv for `claude -p ... --output-format stream-json`. Pure; no side effects.
  */
@@ -73,6 +142,11 @@ export async function* runClaudeStream(
     }
   }
 
+  const matcher =
+    opts.stopSequences && opts.stopSequences.length > 0
+      ? createStopSequenceMatcher(opts.stopSequences)
+      : null;
+
   let buffer = "";
   child.stdout?.on("data", (chunk: Buffer) => {
     buffer += chunk.toString();
@@ -82,7 +156,45 @@ export async function* runClaudeStream(
       buffer = buffer.slice(nl + 1);
       if (line.length > 0) {
         try {
-          queue.push(JSON.parse(line));
+          const parsed = JSON.parse(line) as Record<string, unknown>;
+          // Stop-sequence sniff on assistant text content.
+          if (matcher !== null && parsed["type"] === "assistant") {
+            const message = parsed["message"] as
+              | { content?: Array<{ type?: string; text?: string }> }
+              | undefined;
+            const content = message?.content;
+            if (Array.isArray(content)) {
+              let cutInfo: StopSequenceMatch | null = null;
+              const newContent = content.map((block) => {
+                if (cutInfo !== null) return block;
+                if (block?.type === "text" && typeof block.text === "string") {
+                  const r = matcher.feed(block.text);
+                  if (r.matched) {
+                    cutInfo = r;
+                    return { ...block, text: block.text.slice(0, r.cutAt) };
+                  }
+                }
+                return block;
+              });
+              if (cutInfo !== null) {
+                const matched: StopSequenceMatch = cutInfo;
+                // Push the truncated event, then the sentinel. Use a fresh
+                // object so we don't mutate the caller's parsed view.
+                queue.push({ ...parsed, message: { ...message, content: newContent } });
+                queue.push({
+                  type: "_internal",
+                  subtype: "stop_sequence_match",
+                  matchedSequence: matched.matchedSequence
+                });
+                done = true;
+                if (child.pid !== undefined) treeKill(child.pid, "SIGKILL");
+                else child.kill("SIGKILL");
+                wake();
+                return;
+              }
+            }
+          }
+          queue.push(parsed);
         } catch {
           // Malformed line — skip silently; caller just sees fewer events.
         }
