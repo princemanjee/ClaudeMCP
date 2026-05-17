@@ -33,6 +33,12 @@
   /* Form surfaces */
   --input-bg: rgba(255, 255, 255, 0.06);
 
+  /* Native <option> popup — opaque colors (no backdrop-filter possible on OS popup) */
+  --option-bg: #1a1340;
+  --option-text: #f5f5fa;
+  --option-hover-bg: #ec4899;
+  --option-hover-text: #ffffff;
+
   /* Modal */
   --modal-overlay: rgba(0, 0, 0, 0.55);
 

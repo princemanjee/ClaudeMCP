@@ -213,6 +213,18 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 2px var(--ring);
 }
 input:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Native <option> dropdown isn't covered by backdrop-filter; give it opaque
+   theme-aware colors so it reads correctly on both themes. */
+select option {
+  background-color: var(--option-bg);
+  color: var(--option-text);
+}
+select option:checked,
+select option:hover {
+  background-color: var(--option-hover-bg);
+  color: var(--option-hover-text);
+}
 label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
 label.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 0; }
 label.toggle input[type="checkbox"] { width: auto; }
