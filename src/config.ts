@@ -17,7 +17,9 @@ const ConfigSchema = z
     claude: z
       .object({
         enabled: z.boolean().default(true),
-        command: z.string().default("claude"),
+        // string for a bare executable name, or string[] for a prefix-args form
+        // like ["wsl", "claude"]. Matches what runners/types.ts accepts.
+        command: z.union([z.string(), z.array(z.string()).nonempty()]).default("claude"),
         priority: z.number().int().default(100),
         timeoutMs: z.number().int().positive().default(600000)
       })
@@ -26,7 +28,7 @@ const ConfigSchema = z
     gemini: z
       .object({
         enabled: z.boolean().default(true),
-        command: z.string().default("gemini"),
+        command: z.union([z.string(), z.array(z.string()).nonempty()]).default("gemini"),
         priority: z.number().int().default(90),
         timeoutMs: z.number().int().positive().default(600000)
       })
