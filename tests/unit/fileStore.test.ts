@@ -182,3 +182,69 @@ describe("FileStore — resolveForInline", () => {
     ).rejects.toBeInstanceOf(FileNotFoundError);
   });
 });
+
+describe("FileStore — eviction", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudemcp-fs-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("TTL sweep removes entries whose lastAccessedAt is older than ttlMs", async () => {
+    const store = new FileStore({
+      dir,
+      ttlMs: 50,
+      maxTotalBytes: 10_000_000,
+      sweepIntervalMs: 0
+    });
+    const stored = await store.upload(Buffer.from("aged"), "a.txt", "text/plain");
+    await new Promise((r) => setTimeout(r, 80));
+    store.runEviction();
+    await expect(store.get(stored.id)).rejects.toBeInstanceOf(FileNotFoundError);
+    store.stop();
+  });
+
+  it("LRU pass evicts oldest-accessed entries when total size exceeds cap", async () => {
+    const store = new FileStore({
+      dir,
+      ttlMs: 60_000,
+      maxTotalBytes: 6, // tiny cap so 2-byte uploads trip eviction
+      sweepIntervalMs: 0
+    });
+    const a = await store.upload(Buffer.from("aa"), "a", "text/plain");
+    await new Promise((r) => setTimeout(r, 5));
+    const b = await store.upload(Buffer.from("bb"), "b", "text/plain");
+    await new Promise((r) => setTimeout(r, 5));
+    const c = await store.upload(Buffer.from("cc"), "c", "text/plain");
+    await new Promise((r) => setTimeout(r, 5));
+    const d = await store.upload(Buffer.from("dd"), "d", "text/plain");
+
+    store.runEviction();
+
+    // Total 8 bytes > cap 6; LRU evicts oldest (a), leaving 6 bytes — under cap.
+    await expect(store.get(a.id)).rejects.toBeInstanceOf(FileNotFoundError);
+    await expect(store.get(b.id)).resolves.toBeTruthy();
+    await expect(store.get(c.id)).resolves.toBeTruthy();
+    await expect(store.get(d.id)).resolves.toBeTruthy();
+    store.stop();
+  });
+
+  it("TTL pass runs before LRU pass so expired entries don't get re-ranked", async () => {
+    const store = new FileStore({
+      dir,
+      ttlMs: 50,
+      maxTotalBytes: 100,
+      sweepIntervalMs: 0
+    });
+    await store.upload(Buffer.from("expired"), "e", "text/plain");
+    await new Promise((r) => setTimeout(r, 80));
+    const fresh = await store.upload(Buffer.from("fresh"), "f", "text/plain");
+    store.runEviction();
+    await expect(store.get(fresh.id)).resolves.toBeTruthy();
+    store.stop();
+  });
+});
