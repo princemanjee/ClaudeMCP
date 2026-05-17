@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { Archive } from "./archive.js";
 import { BackendRegistry } from "./backends/registry.js";
 import { ClaudeBackend } from "./backends/claudeBackend.js";
+import { LMStudioBackend } from "./backends/lmstudioBackend.js";
 import { FileStore } from "./fileStore.js";
 import { ResponseCache } from "./responseCache.js";
 import { loadConfig, type Config } from "./config.js";
@@ -84,8 +85,9 @@ export function buildApp(deps: ServerDeps): Express {
 }
 
 /**
- * Build a registry populated with every enabled backend. Plan 03 only knows
- * about ClaudeBackend; later plans add gemini/lmstudio/ollama here.
+ * Build a registry populated with every enabled backend. Plan 08 adds
+ * LMStudioBackend alongside ClaudeBackend; Plan 06's GeminiBackend will land
+ * here once Plan 07 ships. Ollama lands in Plan 09.
  */
 export function buildRegistry(config: Config): BackendRegistry {
   const registry = new BackendRegistry({
@@ -99,6 +101,14 @@ export function buildRegistry(config: Config): BackendRegistry {
       new ClaudeBackend({
         command: config.claude.command,
         timeoutMs: config.claude.timeoutMs
+      })
+    );
+  }
+  if (config.lmstudio.enabled && config.lmstudio.instances.length > 0) {
+    registry.register(
+      new LMStudioBackend({
+        enabled: config.lmstudio.enabled,
+        instances: config.lmstudio.instances
       })
     );
   }
