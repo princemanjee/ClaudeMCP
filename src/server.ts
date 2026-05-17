@@ -3,15 +3,21 @@ import type { Server } from "node:http";
 import { Archive } from "./archive.js";
 import { BackendRegistry } from "./backends/registry.js";
 import { ClaudeBackend } from "./backends/claudeBackend.js";
+import { FileStore } from "./fileStore.js";
+import { ResponseCache } from "./responseCache.js";
 import { loadConfig, type Config } from "./config.js";
 import { createCountTokensHandler } from "./anthropicShim/countTokens.js";
 import { createMessagesHandler } from "./anthropicShim/messages.js";
 import { createModelsHandlers } from "./anthropicShim/models.js";
+import { createFilesHandlers } from "./anthropicShim/files.js";
+import { createAdminArchiveHandlers } from "./admin/archive.js";
 
 export interface ServerDeps {
   config: Config;
   registry: BackendRegistry;
   archive: Archive;
+  fileStore: FileStore;
+  responseCache: ResponseCache;
 }
 
 /**
@@ -34,7 +40,13 @@ export function buildApp(deps: ServerDeps): Express {
 
   app.post(
     "/v1/messages",
-    createMessagesHandler({ registry: deps.registry, config: handlerConfig })
+    createMessagesHandler({
+      registry: deps.registry,
+      archive: deps.archive,
+      responseCache: deps.responseCache,
+      fileStore: deps.fileStore,
+      config: handlerConfig
+    })
   );
   app.post(
     "/v1/messages/count_tokens",
@@ -47,6 +59,26 @@ export function buildApp(deps: ServerDeps): Express {
   });
   app.get("/v1/models", modelsHandlers.list);
   app.get("/v1/models/:id", modelsHandlers.get);
+
+  // ---- Files API -------------------------------------------------------
+  const filesHandlers = createFilesHandlers({
+    fileStore: deps.fileStore,
+    config: { apiKey: deps.config.apiKey }
+  });
+  app.post("/v1/files", filesHandlers.upload);
+  app.get("/v1/files", filesHandlers.list);
+  app.get("/v1/files/:id", filesHandlers.getMetadata);
+  app.get("/v1/files/:id/content", filesHandlers.download);
+  app.delete("/v1/files/:id", filesHandlers.delete);
+
+  // ---- Admin archive ---------------------------------------------------
+  const adminArchive = createAdminArchiveHandlers({
+    archive: deps.archive,
+    config: { apiKey: deps.config.apiKey }
+  });
+  app.get("/admin/archive", adminArchive.list);
+  app.get("/admin/archive/search", adminArchive.search);
+  app.get("/admin/archive/:id", adminArchive.getById);
 
   return app;
 }
@@ -83,6 +115,8 @@ export interface RunningServer {
   http: Server;
   registry: BackendRegistry;
   archive: Archive;
+  fileStore: FileStore;
+  responseCache: ResponseCache;
   config: Config;
   shutdown: () => Promise<void>;
 }
@@ -97,9 +131,19 @@ const DEFAULT_PORT = 3210;
 export async function main(opts: MainOptions): Promise<RunningServer> {
   const config = loadConfig(opts.configPath);
   const archive = new Archive(config.archive.dbPath);
+  const fileStore = new FileStore({
+    dir: config.files.dir,
+    ttlMs: config.files.ttlMs,
+    maxTotalBytes: config.files.maxTotalBytes
+  });
+  const responseCache = new ResponseCache({
+    file: config.cache.file,
+    ttlMs: config.cache.ttlMs,
+    maxEntries: config.cache.maxEntries
+  });
   const registry = buildRegistry(config);
 
-  const app = buildApp({ config, registry, archive });
+  const app = buildApp({ config, registry, archive, fileStore, responseCache });
   const port = opts.port ?? DEFAULT_PORT;
   const http = app.listen(port);
 
@@ -115,6 +159,7 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
     if (shuttingDown) return;
     shuttingDown = true;
     registry.stop();
+    fileStore.stop();
     archive.close();
     await new Promise<void>((resolve) => {
       const force = setTimeout(() => resolve(), 5000);
@@ -133,5 +178,5 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
 
   // eslint-disable-next-line no-console
   console.log(`ClaudeMCP listening on http://127.0.0.1:${port}`);
-  return { app, http, registry, archive, config, shutdown };
+  return { app, http, registry, archive, fileStore, responseCache, config, shutdown };
 }
