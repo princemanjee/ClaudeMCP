@@ -11,9 +11,13 @@ export interface IdentifyResult {
     | "anthropic-id-prefix"
     | "google-id-prefix"
     | "default-backend"
+    | "cli-sentinel"
     | "needs-registry-lookup";
 }
 
+// Cloud-CLI alias shortcuts. These claim the bare names globally — a user
+// running LM Studio with a model literally named "opus" will see it routed
+// to Claude. To escape, use the prefix-override syntax (e.g., "lmstudio/opus").
 const CLAUDE_ALIASES = new Set(["opus", "sonnet", "haiku"]);
 const GEMINI_ALIASES = new Set(["pro", "flash", "flash-lite"]);
 const SENTINELS = new Set(["auto", ""]);
@@ -42,14 +46,14 @@ export function identifyBackend(
     return {
       backend: "claude",
       remainingModel: "claude-code-cli",
-      reason: "default-backend"
+      reason: "cli-sentinel"
     };
   }
   if (model === "gemini-cli") {
     return {
       backend: "gemini",
       remainingModel: "gemini-cli",
-      reason: "default-backend"
+      reason: "cli-sentinel"
     };
   }
 
@@ -66,7 +70,7 @@ export function identifyBackend(
     return {
       backend: prefixed.backend,
       remainingModel: prefixed.remaining,
-      instance: prefixed.instance,
+      ...(prefixed.instance !== undefined && { instance: prefixed.instance }),
       reason: "prefix-override"
     };
   }

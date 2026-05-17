@@ -69,12 +69,20 @@ describe("identifyBackend", () => {
     expect(identifyBackend(undefined, "lmstudio").backend).toBe("lmstudio");
   });
 
-  it("'claude-code-cli' forces claude regardless of defaultBackend", () => {
-    expect(identifyBackend("claude-code-cli", "gemini").backend).toBe("claude");
+  it("'claude-code-cli' forces claude with cli-sentinel reason regardless of defaultBackend", () => {
+    expect(identifyBackend("claude-code-cli", "gemini")).toEqual({
+      backend: "claude",
+      remainingModel: "claude-code-cli",
+      reason: "cli-sentinel"
+    });
   });
 
-  it("'gemini-cli' forces gemini regardless of defaultBackend", () => {
-    expect(identifyBackend("gemini-cli", "claude").backend).toBe("gemini");
+  it("'gemini-cli' forces gemini with cli-sentinel reason regardless of defaultBackend", () => {
+    expect(identifyBackend("gemini-cli", "claude")).toEqual({
+      backend: "gemini",
+      remainingModel: "gemini-cli",
+      reason: "cli-sentinel"
+    });
   });
 
   it("returns unresolved-local for unknown bare names (registry will look up)", () => {
