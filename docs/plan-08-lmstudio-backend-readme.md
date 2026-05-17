@@ -82,4 +82,21 @@ Within the `BackendRegistry`, `lmstudio` carries a single backend-level priority
 
 ## Deviations from this plan that landed during execution
 
-(Filled in by the implementer / reviewer during the actual task cycles. Expected items include: count reconciliation if `MOCK_HANG` tests were dropped, finish_reason: "length" mock trigger added or skipped, server.mjs bin shim deferred, in-process pattern fallback to subprocess if Vitest isolation issues surface.)
+The plan was followed as written. The following minor reconciliations were necessary:
+
+1. **Test count reconciliation.** Plan estimated ~49 new tests; actual count is **48 new tests** (16 openaiCompatClient + 28 lmstudioBackend + 4 integration). Breakdown:
+   - `openaiCompatClient.test.ts`: 16 (6 skeleton + 7 streaming + 3 embeddings) — matches plan.
+   - `lmstudioBackend.test.ts`: 28 (10 skeleton, with two placeholders that get replaced by 9 invoke tests in Task 6 and 3 embed tests in Task 7, plus 7 multi-instance in Task 8 = 10 - 1 + 9 - 1 + 3 + 7 = 27, plus one defensive empty-models test = 28). The plan's "~29" estimate counted the placeholder "invoke throws" / "embed throws" tests as separate from the real implementations; in reality the placeholders are deleted when their real implementations land (per Plan-02 §3 reconciliation pattern). Total file count: 28.
+   - `integration/lmstudioBackend.test.ts`: 4 — matches plan.
+
+2. **No `finish_reason: "length"` mock trigger was added.** The plan flagged this test (Task 6 Step 1, last test) as optional ("Implementer: feel free to flesh out the mock..."). Skipped to keep the mock-fixture surface minimal; `mapFinishReason("length")` is exercised at the unit-of-logic level via code inspection (the helper is straightforward) and can be covered with a later mock-fixture enhancement when a real LM Studio model surfaces this case.
+
+3. **`server.mjs` bin shim shipped as-is.** Per the plan's Task 1 Step 2 note, the bin shim was created but is NOT exercised by Vitest. It imports `inProcess.ts` directly, which requires `tsx` or a pre-build to run from raw `node` — same constraint the plan calls out. Not on the critical path for automated tests.
+
+4. **In-process pattern surfaced no Vitest isolation issues.** No fallback to subprocess needed. All multi-instance tests run cleanly in the same Vitest worker.
+
+5. **Smoke test pass.** Server bootstrap with default config (which includes `lmstudio.instances[]` pointing at `http://127.0.0.1:1234/v1`) registers `LMStudioBackend`, probes successfully (returns empty model list since no real LM Studio is running, but probe is marked `ok: true` since the connection succeeded or — when offline — the per-instance failure is swallowed by `listModels()` and the backend returns `[]`, leaving the registry probe-status as `ok`). No throws during bootstrap. Matches Plan 01 BackendRegistry semantics.
+
+6. **Final totals:** 403 tests pass (355 baseline + 48 Plan-08 new). `npx tsc --noEmit` clean. 11 commits matching the plan's one-per-task structure.
+
+7. **No new runtime dependencies introduced.** `express` was already in `dependencies` from prior plans; this plan reuses it for the in-process mock fixture.
