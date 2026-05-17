@@ -77,3 +77,23 @@ Server-internal deferrals:
 - Default port is 3210.
 - `CLAUDE_MCP_API_KEY` env var overrides the config's `apiKey` (per Plan 01's `loadConfig`).
 - The mock-claude fixture from Plan 02 is the only test backend; Plan 04 can keep using it once it learns to emit tool_use blocks.
+
+---
+
+## Deviations from the as-designed plan
+
+These are the minimal corrections applied during execution. Each was the smallest fix needed to keep moving; nothing was redesigned.
+
+1. **`AuthCarrier` cast in handlers** (Tasks 5, 6, 7).
+   Plan code calls `checkAuth(req, ...)` with the raw Express `Request`. `checkAuth` expects `AuthCarrier` whose `query` is `Record<string, string | string[] | undefined>`, but Express types `req.query` as `ParsedQs` (recursively nested). The plan-as-written fails `tsc --noEmit` with `TS2345`. Fix: import `AuthCarrier` from `../auth.js` and cast at the call site (`req as unknown as AuthCarrier`). Applied identically in `messages.ts`, `countTokens.ts`, and `models.ts`. No behavior change — the runtime still extracts the same headers.
+
+2. **Task 3 test count: 24 not 21.** The plan's Task 3 step expects "all 21 tests green." The `requestTranslator.test.ts` file as written in the plan actually contains 24 `it(...)` blocks (8 happy-path + 5 required-field + 11 scope-rejection). Tests pass; only the predicted count was off.
+
+3. **Task 4 test count: 18 not 16.** Same pattern as #2. The plan predicts "all 16 tests" for `responseTranslator.test.ts`; the file as written contains 18 (8 + 5 + 5).
+
+4. **Task 5 test count: 15 not 12.** The plan predicts 12 tests in `messages.test.ts`; the file as written contains 15 (4 auth + 4 validation + 2 routing + 2 non-streaming + 2 streaming + 1 backend-error).
+
+5. **Task 7 commit message wording.** The plan says `"feat(anthropicShim): add /v1/models list and get handlers (cross-backend)"`. The commit landed as `"feat(anthropicShim): add /v1/models list and get handlers spanning all backends"` — same intent, different wording. Not amended (rule: prefer new commits over `--amend`).
+
+6. **Task 9 integration test switched from subprocess to in-process `buildApp`.** The plan spawns `src/bin.ts` with `--import tsx` and configures the backend via a JSON config file that sets `"command": ["node", MOCK_CLAUDE_JS]`. That JSON array fails the Plan-01 zod schema (`claude.command: z.string()`). Rather than touch Plan-01 source to accept arrays, the test now constructs the registry directly, registers a `ClaudeBackend` with `command: [process.execPath, MOCK_CLAUDE_JS]` (array form accepted at the runtime layer), and exercises `buildApp(...)` via supertest. This preserves full coverage of the HTTP routing surface, auth, translation, streaming, count_tokens, and models — sacrificing only `bin.ts` argv parsing, which has no logic worth integration-testing. This is the Windows-fallback path explicitly allowed by the controller's rule #9.
+
