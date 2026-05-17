@@ -92,6 +92,28 @@ describe("BackendRegistry", () => {
     expect(registry.resolveModel("shared-model")?.id).toBe("lmstudio");
   });
 
+  it("collision winner flips when priorities are reversed", async () => {
+    // Override priorities so ollama outranks lmstudio.
+    const flipped = new BackendRegistry({
+      claude: 100,
+      gemini: 90,
+      lmstudio: 40,
+      ollama: 50
+    });
+    try {
+      const lmstudio = makeBackend({ id: "lmstudio", models: ["shared-model"] });
+      const ollama = makeBackend({ id: "ollama", models: ["shared-model"] });
+      flipped.register(lmstudio);
+      flipped.register(ollama);
+
+      await flipped.probe();
+
+      expect(flipped.resolveModel("shared-model")?.id).toBe("ollama");
+    } finally {
+      flipped.stop();
+    }
+  });
+
   it("probe failures do not crash, leave the failing backend with no models", async () => {
     const ok = makeBackend({ id: "claude", models: ["claude-opus-4-7"] });
     const bad = makeBackend({
@@ -135,6 +157,30 @@ describe("BackendRegistry", () => {
     await vi.advanceTimersByTimeAsync(5000);
 
     expect(claude.listModelsMock).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("startPeriodicProbe is idempotent — calling twice replaces the prior interval", async () => {
+    vi.useFakeTimers();
+    const claude = makeBackend({ id: "claude" });
+    registry.register(claude);
+
+    registry.startPeriodicProbe(1000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claude.listModelsMock).toHaveBeenCalledTimes(1);
+
+    // Second start should replace, not stack.
+    registry.startPeriodicProbe(2000);
+    await vi.advanceTimersByTimeAsync(0); // second immediate probe
+
+    // Advance by the first interval (1000ms) — no extra call (interval replaced).
+    await vi.advanceTimersByTimeAsync(1000);
+    // Advance by the new interval (2000ms total elapsed since second start).
+    await vi.advanceTimersByTimeAsync(1000); // total 2000 from second start
+
+    // Expected: 1 (initial) + 1 (re-start initial) + 1 (one tick of 2000ms interval) = 3
+    expect(claude.listModelsMock).toHaveBeenCalledTimes(3);
+    registry.stop();
     vi.useRealTimers();
   });
 });

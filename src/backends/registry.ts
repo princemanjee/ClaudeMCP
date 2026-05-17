@@ -52,6 +52,18 @@ export class BackendRegistry {
     return this.probeStatus.get(id);
   }
 
+  /**
+   * Run listModels() on every registered backend in parallel, update probe
+   * statuses, rebuild the model→backend lookup map. Errors per backend are
+   * caught and recorded in the failures array; one backend's failure does
+   * not affect the others.
+   *
+   * NOTE: there is no re-entrancy guard. If a probe outlasts the periodic
+   * interval, two probes can run concurrently and the second rebuild wins.
+   * For the skeleton this is acceptable because backends do not exist yet.
+   * Future plans should add a guard flag if slow listModels() becomes a
+   * concern.
+   */
   async probe(): Promise<ProbeOutcome> {
     const successes: ProbeResult[] = [];
     const failures: ProbeFailure[] = [];
@@ -79,6 +91,8 @@ export class BackendRegistry {
   }
 
   startPeriodicProbe(intervalMs: number): void {
+    // Make idempotent: if a previous interval is active, replace it cleanly.
+    if (this.intervalHandle) this.stop();
     void this.probe();
     this.intervalHandle = setInterval(() => {
       void this.probe();
@@ -94,7 +108,8 @@ export class BackendRegistry {
 
   private rebuildModelMap(successes: ProbeResult[]): void {
     const next = new Map<string, BackendId>();
-    // Sort backends by ascending priority so winners (high priority) overwrite losers (low priority).
+    // Sort ascending by priority (low first) so high-priority entries
+    // get written last and overwrite low-priority entries in the map.
     const sorted = [...successes].sort(
       (a, b) =>
         (this.priorities[a.backendId] ?? 0) -
