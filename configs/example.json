@@ -1,0 +1,38 @@
+{
+  "_comments": {
+    "apiKey": "Required. Shared API key for all clients. Sent via x-api-key, Authorization: Bearer, x-goog-api-key, or ?key= query.",
+    "claude.command": "Path or name of the claude CLI executable.",
+    "gemini.command": "Path or name of the gemini CLI executable.",
+    "lmstudio.instances[*].baseUrl": "OpenAI-compatible server URL. Default port for LM Studio is 1234.",
+    "ollama.useNativeApi": "Default mode for all Ollama instances. true => /api/*, false => /v1/*. Per-instance useNativeApi overrides.",
+    "router.defaultBackend": "Backend used when no model is supplied or model is 'auto'.",
+    "router.localProbeIntervalMs": "How often local backends are re-probed to discover loaded models.",
+    "files.maxTotalBytes": "Eviction kicks in when fileStore exceeds this size after TTL pass.",
+    "cache.ttlMs": "Response cache entry lifetime.",
+    "archive.compressionLevel": "zstd level 1-22 for archived request/response bodies.",
+    "embeddings.legacyBackendUrl": "Deprecated: when non-empty, bypasses the backend registry for /v1/embeddings.",
+    "adminUi.bindLocalhost": "When true, admin UI rejects non-localhost requests with 403."
+  },
+  "apiKey": "CHANGE-ME-BEFORE-USE",
+  "claude": { "enabled": true, "command": "claude", "priority": 100, "timeoutMs": 600000 },
+  "gemini": { "enabled": true, "command": "gemini", "priority": 90, "timeoutMs": 600000 },
+  "lmstudio": {
+    "enabled": true,
+    "instances": [
+      { "name": "local", "baseUrl": "http://127.0.0.1:1234/v1", "apiKey": "", "priority": 50, "timeoutMs": 300000 }
+    ]
+  },
+  "ollama": {
+    "enabled": true,
+    "useNativeApi": false,
+    "instances": [
+      { "name": "local", "baseUrl": "http://127.0.0.1:11434", "priority": 40, "timeoutMs": 300000, "useNativeApi": null }
+    ]
+  },
+  "router": { "defaultBackend": "claude", "localProbeIntervalMs": 60000 },
+  "files": { "dir": "data/files", "ttlMs": 604800000, "maxTotalBytes": 5368709120 },
+  "cache": { "file": "data/response-cache.json", "ttlMs": 3600000, "maxEntries": 500 },
+  "archive": { "dbPath": "data/archive.sqlite", "compressionLevel": 3 },
+  "embeddings": { "legacyBackendUrl": "", "legacyApiKey": "", "legacyTimeoutMs": 30000 },
+  "adminUi": { "enabled": true, "bindLocalhost": true, "sessionTtlMs": 3600000 }
+}
