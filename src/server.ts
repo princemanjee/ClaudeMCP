@@ -1,3 +1,25 @@
+/**
+ * ClaudeMCP server bootstrap.
+ *
+ * Mounts three shim surfaces:
+ * - Anthropic shim: POST /v1/messages, POST /v1/messages/count_tokens,
+ *   GET /v1/anthropic/models[/{id}], POST /v1/files*, ...
+ * - OpenAI shim: POST /v1/chat/completions, POST /v1/embeddings,
+ *   GET /v1/models[/{id}].
+ * - Gemini shim: POST /v1beta/models/{model}:generateContent, ...
+ *
+ * Migration note: the legacy `dist/openaiShim/` (compiled-only, single-Claude-
+ * backend) ships in this repo alongside the new `src/openaiShim/` (multi-
+ * backend). The legacy is retained so existing Agent Zero deployments can pin
+ * to either entrypoint during a transitional period; running both on different
+ * ports is supported. Eventual removal of `dist/openaiShim/` is a future
+ * cleanup spec.
+ *
+ * GET /v1/models routing: the canonical path serves the OpenAI-shaped envelope
+ * (matching `openai` npm package expectations). The Anthropic-shaped envelope
+ * is reachable at /v1/anthropic/models. Anthropic-SDK clients calling
+ * `client.models.list()` should set `baseURL` to include `/anthropic`.
+ */
 import express, { type Express, type RequestHandler } from "express";
 import type { Server } from "node:http";
 import { Archive } from "./archive.js";
@@ -16,6 +38,9 @@ import { createCountTokensHandler as createGeminiCountTokensHandler } from "./ge
 import { createFilesHandlers as createGeminiFilesHandlers } from "./geminiShim/files.js";
 import { createGenerateContentHandlers } from "./geminiShim/generateContent.js";
 import { createGeminiModelsHandlers } from "./geminiShim/models.js";
+import { createChatCompletionsHandler } from "./openaiShim/chatCompletions.js";
+import { createEmbeddingsHandler } from "./openaiShim/embeddings.js";
+import { createOpenAIModelsHandlers } from "./openaiShim/models.js";
 import { createAdminArchiveHandlers } from "./admin/archive.js";
 
 export interface ServerDeps {
@@ -59,12 +84,14 @@ export function buildApp(deps: ServerDeps): Express {
     createCountTokensHandler({ registry: deps.registry, config: handlerConfig })
   );
 
-  const modelsHandlers = createModelsHandlers({
+  // Anthropic-shape models endpoint moves to /v1/anthropic/models so the
+  // canonical /v1/models can serve the OpenAI shape (the dominant SDK target).
+  const anthropicModelsHandlers = createModelsHandlers({
     registry: deps.registry,
     config: { apiKey: deps.config.apiKey }
   });
-  app.get("/v1/models", modelsHandlers.list);
-  app.get("/v1/models/:id", modelsHandlers.get);
+  app.get("/v1/anthropic/models", anthropicModelsHandlers.list);
+  app.get("/v1/anthropic/models/:id", anthropicModelsHandlers.get);
 
   // ---- Files API -------------------------------------------------------
   const filesHandlers = createFilesHandlers({
@@ -154,6 +181,42 @@ export function buildApp(deps: ServerDeps): Express {
   app.get("/v1beta/files/:id[:]download", geminiFilesHandlers.download);
   app.get("/v1beta/files/:id", geminiFilesHandlers.getMetadata);
   app.delete("/v1beta/files/:id", geminiFilesHandlers.delete);
+
+  // ---- OpenAI shim -----------------------------------------------------
+  const openaiHandlerConfig = {
+    apiKey: deps.config.apiKey,
+    router: { defaultBackend: deps.config.router.defaultBackend },
+    embeddings: {
+      legacyBackendUrl: deps.config.embeddings.legacyBackendUrl,
+      legacyApiKey: deps.config.embeddings.legacyApiKey,
+      legacyTimeoutMs: deps.config.embeddings.legacyTimeoutMs
+    }
+  };
+
+  app.post(
+    "/v1/chat/completions",
+    createChatCompletionsHandler({
+      registry: deps.registry,
+      config: {
+        apiKey: openaiHandlerConfig.apiKey,
+        router: openaiHandlerConfig.router
+      }
+    })
+  );
+  app.post(
+    "/v1/embeddings",
+    createEmbeddingsHandler({
+      registry: deps.registry,
+      config: openaiHandlerConfig
+    })
+  );
+
+  const openaiModelsHandlers = createOpenAIModelsHandlers({
+    registry: deps.registry,
+    config: { apiKey: deps.config.apiKey }
+  });
+  app.get("/v1/models", openaiModelsHandlers.list);
+  app.get("/v1/models/:id", openaiModelsHandlers.get);
 
   // ---- Admin archive ---------------------------------------------------
   const adminArchive = createAdminArchiveHandlers({
