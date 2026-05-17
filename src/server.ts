@@ -193,6 +193,10 @@ export function buildApp(deps: ServerDeps): Express {
     config: { apiKey: deps.config.apiKey }
   });
   app.post("/v1beta/files", geminiFilesHandlers.upload);
+  // Google SDK (@google/generative-ai) posts uploads to /upload/v1beta/files
+  // with a `multipart/related` envelope. The same upload handler accepts both
+  // wire formats — this alias route just makes the URL surface match.
+  app.post("/upload/v1beta/files", geminiFilesHandlers.upload);
   app.get("/v1beta/files", geminiFilesHandlers.list);
   // Mount the :download route BEFORE the bare :id route to keep path-to-regexp
   // from greedily swallowing the `:download` suffix in :id.

@@ -119,19 +119,32 @@ describe.each(BACKENDS)("Google GenerativeAI SDK x %s backend", (backend) => {
   }, 30000);
 
   // ---- files lifecycle ----------------------------------------------------
-  // The Google SDK's GoogleAIFileManager.uploadFile uses Google's
-  // resumable-upload protocol: POST /upload/v1beta/files with a multipart
-  // body and a two-step init+upload handshake. The Gemini shim implements
-  // only the simpler /v1beta/files surface used by direct curl uploads; it
-  // does not mount /upload/v1beta/files. The SDK fails with 404 on upload.
-  // List/get/delete operations on /v1beta/files DO work (they're exercised
-  // via crossShimFiles integration tests), but cannot be tested through the
-  // SDK without a successful upload first. Documented in plan-13-readme.
+  // The Google SDK's GoogleAIFileManager.uploadFile posts a one-shot
+  // `multipart/related` body to `/upload/v1beta/files`. The shim now mounts
+  // that alias and accepts the SDK's multipart shape (the simpler curl-style
+  // `multipart/form-data` POST to `/v1beta/files` continues to work).
 
-  it.skip(
-    "files.* lifecycle skipped — shim does not mount /upload/v1beta/files",
-    () => {
-      /* See deviations: SDK upload uses resumable /upload/ surface. */
+  it("files.uploadFile via the SDK round-trips through /upload/v1beta/files", async () => {
+    const { GoogleAIFileManager } = await import(
+      "@google/generative-ai/server"
+    );
+    const fm = new GoogleAIFileManager(handle.apiKey, {
+      baseUrl: handle.baseURL
+    });
+    const buf = Buffer.from("compat google-sdk upload bytes");
+    const uploaded = await fm.uploadFile(buf, {
+      mimeType: "text/plain",
+      displayName: "compat-upload.txt"
+    });
+    expect(uploaded.file?.name?.startsWith("files/")).toBe(true);
+    expect(uploaded.file?.mimeType).toBe("text/plain");
+    // Cleanup so other backend iterations start from a clean store.
+    if (uploaded.file?.name) {
+      try {
+        await fm.deleteFile(uploaded.file.name);
+      } catch {
+        /* best effort */
+      }
     }
-  );
+  }, 30000);
 });
