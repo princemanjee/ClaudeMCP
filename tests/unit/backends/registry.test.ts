@@ -183,4 +183,22 @@ describe("BackendRegistry", () => {
     registry.stop();
     vi.useRealTimers();
   });
+
+  it("accepts partial PriorityMap (Plan 02+ tests may register fewer than four backends)", async () => {
+    // Build a registry with only claude's priority specified.
+    const partial = new BackendRegistry({ claude: 100 });
+    try {
+      const claude = makeBackend({ id: "claude", models: ["claude-opus-4-7"] });
+      const ollama = makeBackend({ id: "ollama", models: ["llama-3.3-70b"] });
+      partial.register(claude);
+      partial.register(ollama); // ollama priority unset — defaults to 0 via `?? 0`
+
+      await partial.probe();
+
+      expect(partial.resolveModel("claude-opus-4-7")?.id).toBe("claude");
+      expect(partial.resolveModel("llama-3.3-70b")?.id).toBe("ollama");
+    } finally {
+      partial.stop();
+    }
+  });
 });

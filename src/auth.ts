@@ -13,13 +13,14 @@ function pickFirst(value: string | string[] | undefined): string | undefined {
 }
 
 function safeEqual(a: string, b: string): boolean {
-  // Pad the shorter to the longer length so timingSafeEqual doesn't throw, then
-  // require lengths to match for a true result.
-  const len = Math.max(a.length, b.length);
-  const ab = Buffer.from(a.padEnd(len, "\0"));
-  const bb = Buffer.from(b.padEnd(len, "\0"));
-  const equal = timingSafeEqual(ab, bb);
-  return equal && a.length === b.length;
+  // Encode both as UTF-8 byte buffers. timingSafeEqual requires equal byte
+  // length, so check lengths first (revealing a length mismatch is acceptable —
+  // it tells an attacker nothing they can't already infer from the response
+  // shape). The constant-time work happens only when lengths match.
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.byteLength !== bb.byteLength) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 function extractKey(carrier: AuthCarrier): string | undefined {

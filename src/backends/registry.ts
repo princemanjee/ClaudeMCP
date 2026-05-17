@@ -21,7 +21,7 @@ export interface ProbeStatus {
   error?: string;
 }
 
-export type PriorityMap = Record<BackendId, number>;
+export type PriorityMap = Partial<Record<BackendId, number>>;
 
 export class BackendRegistry {
   private readonly backends = new Map<BackendId, Backend>();

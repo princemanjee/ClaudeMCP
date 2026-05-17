@@ -80,4 +80,18 @@ describe("checkAuth", () => {
     };
     expect(checkAuth(r, apiKey)).toBe(true);
   });
+
+  it("handles UTF-8 multi-byte characters in keys correctly", () => {
+    // Two strings with same character count but different byte lengths.
+    // Without the byte-length-first check, timingSafeEqual would throw.
+    const a = "key-with-emoji-\u{1F600}"; // 16 chars, 19 bytes
+    const b = "key-with-emoji-X";          // 16 chars, 16 bytes
+    expect(checkAuth(req({ headers: { "x-api-key": a } }), b)).toBe(false);
+    expect(checkAuth(req({ headers: { "x-api-key": b } }), a)).toBe(false);
+  });
+
+  it("accepts identical UTF-8 multi-byte keys", () => {
+    const key = "sk-\u{1F511}-\u{1F600}";
+    expect(checkAuth(req({ headers: { "x-api-key": key } }), key)).toBe(true);
+  });
 });
