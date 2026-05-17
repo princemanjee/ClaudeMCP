@@ -114,3 +114,14 @@ The Plan 10 spec was written assuming Plan 09 (Ollama backend) had not landed an
 6. **`Archive(':memory:')` not supported.** The Archive constructor enforces WAL journal mode, which sqlite rejects on the special `:memory:` path. Integration tests write to `tmpdir/archive.sqlite` per-test instead — a minor adaptation from the plan template that uses in-memory dbs.
 
 None of these deviations affect the observable wire-format behavior or the Plan-10 scope contract.
+
+## Self-review checklist verification
+
+- `npx vitest run` — 651 passed, 2 skipped (both Ollama-dependent: 1 in `tests/integration/openaiShim/chatCompletions.test.ts`, 1 in `tests/integration/openaiShim/embeddings.test.ts`). Baseline was 539; net additions across Tasks 1-9: 8 (errors) + 29 (requestTranslator) + 21 (responseTranslator) + 23 (chatCompletions unit) + 13 (embeddings unit) + 9 (models unit) + 5 (chat integration including the smoke) + 5 (embed integration) = 113 new tests (slightly above the plan's projected ~80 because the additional smoke / parity / cross-test assertions land here too).
+- `npx tsc --noEmit` — clean.
+- `dist/openaiShim/` is untouched (`git diff main -- dist/` shows zero changes).
+- `src/openaiShim/` contains exactly 9 files: `types.ts`, `errors.ts`, `promptBuilder.ts`, `responseParser.ts`, `requestTranslator.ts`, `responseTranslator.ts`, `chatCompletions.ts`, `embeddings.ts`, `models.ts`.
+- `src/server.ts` mounts 4 new routes (`POST /v1/chat/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /v1/models/{id}`) and relocates the Anthropic-shape models routes under `/v1/anthropic/...`.
+- `SYSTEM_PRELUDE` and `SYSTEM_FORMAT_RULES` in `src/openaiShim/promptBuilder.ts` are byte-identical to `dist/openaiShim/promptBuilder.js` (verified by direct diff).
+- `NormalizedRequest.tools` and `toolChoice` are never set by `openaiRequestToNormalized` (verified by the dedicated test in `tests/unit/openaiShim/requestTranslator.test.ts`).
+- Plan 03's Anthropic-shim path migration: `tests/integration/messages.test.ts` updated to hit `/v1/anthropic/models[/{id}]` and adds a new smoke test confirming `/v1/models` now returns the OpenAI envelope.
