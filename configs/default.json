@@ -1,0 +1,27 @@
+{
+  "apiKey": "CHANGE-ME-BEFORE-USE",
+  "claude": { "enabled": true, "command": "claude", "priority": 100, "timeoutMs": 600000 },
+  "gemini": { "enabled": true, "command": "gemini", "priority": 90, "timeoutMs": 600000 },
+  "lmstudio": {
+    "enabled": true,
+    "instances": [
+      { "name": "local", "baseUrl": "http://127.0.0.1:1234/v1", "apiKey": "", "priority": 50, "timeoutMs": 300000 }
+    ]
+  },
+  "ollama": {
+    "enabled": true,
+    "useNativeApi": false,
+    "instances": [
+      { "name": "local", "baseUrl": "http://127.0.0.1:11434", "priority": 40, "timeoutMs": 300000, "useNativeApi": null }
+    ]
+  },
+  "router": {
+    "defaultBackend": "claude",
+    "localProbeIntervalMs": 60000
+  },
+  "files": { "dir": "data/files", "ttlMs": 604800000, "maxTotalBytes": 5368709120 },
+  "cache": { "file": "data/response-cache.json", "ttlMs": 3600000, "maxEntries": 500 },
+  "archive": { "dbPath": "data/archive.sqlite", "compressionLevel": 3 },
+  "embeddings": { "legacyBackendUrl": "", "legacyApiKey": "", "legacyTimeoutMs": 30000 },
+  "adminUi": { "enabled": true, "bindLocalhost": true, "sessionTtlMs": 3600000 }
+}
