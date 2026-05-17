@@ -41,8 +41,8 @@ describe("GeminiBackend skeleton", () => {
 
   it("capabilitiesFor(model) returns Gemini CLI's actual surface", () => {
     const caps = makeBackend().capabilitiesFor("gemini-pro");
-    // Plan 06 baseline: toolUse stays false; Plan 07 wires it on.
-    expect(caps.toolUse).toBe(false);
+    // Plan 07 flipped this on (was false in Plan 06 baseline).
+    expect(caps.toolUse).toBe(true);
     expect(caps.multimodal).toBe(true);            // model-dependent, conservative true
     expect(caps.thinking).toBe(false);             // Gemini 2.5 thinking-mode lands later
     expect(caps.cacheControl).toBe("none");        // Plan-05 local response cache works regardless
@@ -205,61 +205,100 @@ describe("GeminiBackend skeleton", () => {
     }
   });
 
-  it("invoke throws on multimodal content (Plan 06 scope is text-only)", async () => {
+  it("invoke accepts tools array without throwing (Plan 07)", async () => {
     const backend = new GeminiBackend({
       command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
       timeoutMs: 5000
     });
 
-    await expect(async () => {
-      for await (const _ of backend.invoke({
-        model: "gemini-flash",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "describe this" },
-              { type: "image", mediaType: "image/png", data: "BASE64" }
-            ]
-          }
-        ]
-      })) {
-        // no-op
-      }
-    }).rejects.toThrow(/multimodal/i);
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-pro",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      tools: [{ name: "calc", inputSchema: { type: "object" } }]
+    })) {
+      events.push(ev);
+    }
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
   });
 
-  it("invoke throws on tools array (Plan 06 scope is no-tools)", async () => {
+  it("invoke accepts stopSequences array without throwing (Plan 07)", async () => {
     const backend = new GeminiBackend({
       command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
       timeoutMs: 5000
     });
 
-    await expect(async () => {
-      for await (const _ of backend.invoke({
-        model: "gemini-flash",
-        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-        tools: [{ name: "calc", inputSchema: {} }]
-      })) {
-        // no-op
-      }
-    }).rejects.toThrow(/tool/i);
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-pro",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      stopSequences: ["END"]
+    })) {
+      events.push(ev);
+    }
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
   });
 
-  it("invoke throws on stopSequences (Plan 06 defers to Plan 07)", async () => {
+  it("invoke accepts multimodal content blocks without throwing (Plan 07)", async () => {
     const backend = new GeminiBackend({
       command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
       timeoutMs: 5000
     });
 
-    await expect(async () => {
-      for await (const _ of backend.invoke({
-        model: "gemini-flash",
-        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-        stopSequences: ["END"]
-      })) {
-        // no-op
-      }
-    }).rejects.toThrow(/stop/i);
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-pro",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this" },
+            { type: "image", mediaType: "image/png", data: "BASE64" }
+          ]
+        }
+      ]
+    })) {
+      events.push(ev);
+    }
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("invoke emits tool_use_start + tool_use_delta + tool_use_stop for Gemini functionCall parts", async () => {
+    const backend = new GeminiBackend({
+      command: ["node", join(__dirname, "..", "..", "fixtures", "mock-gemini", "index.mjs")],
+      timeoutMs: 5000
+    });
+
+    const events: NormalizedEvent[] = [];
+    for await (const ev of backend.invoke({
+      model: "gemini-pro",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: 'MOCK_FUNCTION_CALL(calc|{"x":1,"y":2})' }]
+        }
+      ],
+      tools: [{ name: "calc", inputSchema: { type: "object" } }]
+    })) {
+      events.push(ev);
+    }
+
+    const starts = events.filter((e) => e.kind === "tool_use_start");
+    const deltas = events.filter((e) => e.kind === "tool_use_delta");
+    const stops = events.filter((e) => e.kind === "tool_use_stop");
+    expect(starts.length).toBe(1);
+    expect(deltas.length).toBeGreaterThan(0);
+    expect(stops.length).toBe(1);
+
+    if (starts[0]?.kind === "tool_use_start") {
+      expect(starts[0].name).toBe("calc");
+    }
+    if (deltas[0]?.kind === "tool_use_delta") {
+      // Concatenated partials should parse to the original args.
+      const joined = deltas.map((d) => (d.kind === "tool_use_delta" ? d.partialJson : "")).join("");
+      expect(JSON.parse(joined)).toEqual({ x: 1, y: 2 });
+    }
   });
 });
