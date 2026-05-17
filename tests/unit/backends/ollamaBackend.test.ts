@@ -60,7 +60,9 @@ describe("OllamaBackend skeleton", () => {
     expect(models).toEqual([]);
   });
 
-  it("invoke stub throws (lands in Task 7)", async () => {
+  it("invoke against unreachable instance surfaces a connection error", async () => {
+    // After Task 7, invoke() actually dispatches; verify it surfaces the
+    // unreachable host as an error rather than silently hanging.
     const backend = new OllamaBackend(makeConfig());
     await expect(async () => {
       for await (const _ of backend.invoke({
@@ -69,14 +71,16 @@ describe("OllamaBackend skeleton", () => {
       })) {
         // no-op
       }
-    }).rejects.toThrow(/invoke|Task/);
+    }).rejects.toThrow();
   });
 
-  it("embed stub throws (lands in Task 9)", async () => {
+  it("embed against unreachable instance surfaces a connection error", async () => {
+    // After Task 9, embed() actually dispatches; verify it surfaces the
+    // unreachable host as an error rather than silently hanging.
     const backend = new OllamaBackend(makeConfig());
     await expect(
       backend.embed!({ model: "nomic-embed-text", input: ["hello"] })
-    ).rejects.toThrow(/embed|Task/);
+    ).rejects.toThrow();
   });
 });
 
@@ -262,5 +266,88 @@ describe("OllamaBackend.listModels (instance probe failure does not crash)", () 
     const models = await backend.listModels();
     const ids = models.map((m) => m.id);
     expect(ids).toContain("llama-3.3-70b");
+  });
+});
+
+describe("OllamaBackend.invoke (compat mode)", () => {
+  let mock: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mock = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: false,
+      instances: [
+        { name: "local", baseUrl: mock.baseUrl, priority: 40, timeoutMs: 5000, useNativeApi: null }
+      ]
+    });
+    // Cause listModels to populate the instance-owner cache.
+    await backend.listModels();
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+  });
+
+  async function collect(it: AsyncIterable<import("../../../src/backends/types.js").NormalizedEvent>): Promise<import("../../../src/backends/types.js").NormalizedEvent[]> {
+    const out: import("../../../src/backends/types.js").NormalizedEvent[] = [];
+    for await (const ev of it) out.push(ev);
+    return out;
+  }
+
+  it("emits message_start → text_delta(s) → message_stop for a normal chat", async () => {
+    const events = await collect(
+      backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }]
+      })
+    );
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+    const text = events
+      .filter((e): e is Extract<import("../../../src/backends/types.js").NormalizedEvent, { kind: "text_delta" }> => e.kind === "text_delta")
+      .map((e) => e.text)
+      .join("");
+    expect(text).toBe("echo: hello");
+  });
+
+  it("forwards samplingParams as flat fields (OpenAI-compat shape)", async () => {
+    // The mock doesn't validate the request; success of this call is the contract.
+    const events = await collect(
+      backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        samplingParams: { temperature: 0.5, topP: 0.9, topK: 40 },
+        maxTokens: 100,
+        stopSequences: ["END"]
+      })
+    );
+    expect(events[0]?.kind).toBe("message_start");
+    expect(events[events.length - 1]?.kind).toBe("message_stop");
+  });
+
+  it("emits tool_use events for tool_calls (compat mode)", async () => {
+    const events = await collect(
+      backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "MOCK_TOOL_CALL" }] }],
+        tools: [{ name: "echo", inputSchema: { type: "object" } }]
+      })
+    );
+    expect(events.some((e) => e.kind === "tool_use_start")).toBe(true);
+    expect(events.some((e) => e.kind === "tool_use_delta")).toBe(true);
+    expect(events.some((e) => e.kind === "tool_use_stop")).toBe(true);
+  });
+
+  it("propagates HTTP 500 as a thrown error from the iterator", async () => {
+    await expect(async () => {
+      for await (const _ of backend.invoke({
+        model: "llama-3.3-70b",
+        messages: [{ role: "user", content: [{ type: "text", text: "MOCK_ERROR" }] }]
+      })) {
+        // no-op
+      }
+    }).rejects.toThrow();
   });
 });

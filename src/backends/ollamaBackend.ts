@@ -68,6 +68,9 @@ export class OllamaBackend implements Backend {
   private readonly instances: ResolvedInstance[];
   private readonly byName: Map<string, ResolvedInstance>;
 
+  /** modelId → name of the highest-priority instance that reports owning it. */
+  private modelOwner = new Map<string, string>();
+
   constructor(config: OllamaBackendConfig) {
     if (!config.instances || config.instances.length === 0) {
       throw new Error(
@@ -169,6 +172,7 @@ export class OllamaBackend implements Backend {
         if (!seen.has(m.id)) {
           seen.add(m.id);
           out.push(m);
+          this.modelOwner.set(m.id, p.instance.name);
         }
       }
     }
@@ -225,9 +229,142 @@ export class OllamaBackend implements Backend {
     return out;
   }
 
-  // eslint-disable-next-line require-yield
-  async *invoke(_req: NormalizedRequest): AsyncIterable<NormalizedEvent> {
-    throw new Error("OllamaBackend.invoke() lands in Plan 09 Task 7");
+  async *invoke(
+    req: NormalizedRequest
+  ): AsyncIterable<NormalizedEvent> {
+    const instance = this.selectInstance(req.model);
+
+    if (instance.mode === "compat") {
+      yield* this.invokeCompat(instance, req);
+      return;
+    }
+
+    // Native dispatch lands in Task 8.
+    throw new Error(
+      "OllamaBackend.invoke(): native-mode dispatch lands in Plan 09 Task 8"
+    );
+  }
+
+  /**
+   * Pick the instance that should service `modelId`. Strategy:
+   *   1. If listModels has recorded an owner for this model id, use it.
+   *   2. Otherwise, fall back to the highest-priority instance and let the
+   *      wire return whatever error (unknown model ids surface as a 4xx from
+   *      Ollama, which the client surfaces verbatim).
+   */
+  private selectInstance(modelId: string): ResolvedInstance {
+    const ownerName = this.modelOwner.get(modelId);
+    if (ownerName) {
+      const r = this.byName.get(ownerName);
+      if (r) return r;
+    }
+    // Highest priority fallback.
+    let best = this.instances[0];
+    if (!best) {
+      throw new Error("OllamaBackend.selectInstance: no instances configured");
+    }
+    for (const r of this.instances) {
+      if (r.priority > best.priority) best = r;
+    }
+    return best;
+  }
+
+  /**
+   * Compat-mode invocation: openaiCompatClient.chatCompletions returns raw
+   * OpenAI SSE chunks (Plan 08's shipped surface differs from Plan 09's
+   * docs which assumed a pre-translated AsyncIterable<NormalizedEvent>). We
+   * translate here, mirroring LMStudioBackend's translator.
+   */
+  private async *invokeCompat(
+    instance: ResolvedInstance,
+    req: NormalizedRequest
+  ): AsyncIterable<NormalizedEvent> {
+    if (!instance.compatClient) {
+      throw new Error(
+        `OllamaBackend.invokeCompat: instance ${instance.name} has no compatClient`
+      );
+    }
+
+    const body = buildCompatBody(req);
+
+    let startEmitted = false;
+    let textIndex = 0;
+    let textOpen = false;
+    const openToolIndices = new Set<number>();
+    const toolNamesSeen = new Map<number, string>();
+
+    for await (const raw of instance.compatClient.chatCompletions(body)) {
+      const chunk = raw as OpenAIChunk;
+      const choice = chunk.choices?.[0];
+
+      if (!startEmitted) {
+        startEmitted = true;
+        yield { kind: "message_start", model: chunk.model ?? req.model };
+      }
+
+      const delta = choice?.delta;
+
+      if (delta?.content && delta.content.length > 0) {
+        yield { kind: "text_delta", index: textIndex, text: delta.content };
+        textOpen = true;
+      }
+
+      if (Array.isArray(delta?.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const tcIndex = typeof tc.index === "number" ? tc.index : 0;
+          if (!openToolIndices.has(tcIndex)) {
+            const id = tc.id;
+            const name = tc.function?.name;
+            if (typeof id === "string" && typeof name === "string") {
+              openToolIndices.add(tcIndex);
+              toolNamesSeen.set(tcIndex, name);
+              yield { kind: "tool_use_start", index: tcIndex, id, name };
+            }
+          }
+          const argsDelta = tc.function?.arguments;
+          if (typeof argsDelta === "string" && argsDelta.length > 0) {
+            yield {
+              kind: "tool_use_delta",
+              index: tcIndex,
+              partialJson: argsDelta
+            };
+          }
+        }
+      }
+
+      if (choice?.finish_reason !== undefined && choice.finish_reason !== null) {
+        for (const idx of openToolIndices) {
+          yield { kind: "tool_use_stop", index: idx };
+        }
+        if (textOpen) {
+          textIndex++;
+          textOpen = false;
+        }
+        const usage = chunk.usage
+          ? {
+              inputTokens: chunk.usage.prompt_tokens ?? 0,
+              outputTokens: chunk.usage.completion_tokens ?? 0
+            }
+          : undefined;
+        yield {
+          kind: "message_stop",
+          stopReason: mapFinishReason(choice.finish_reason),
+          usage:
+            usage && usage.inputTokens + usage.outputTokens > 0
+              ? usage
+              : undefined
+        };
+        return;
+      }
+    }
+
+    if (!startEmitted) {
+      yield { kind: "message_start", model: req.model };
+    }
+    for (const idx of openToolIndices) {
+      yield { kind: "tool_use_stop", index: idx };
+    }
+    yield { kind: "message_stop", stopReason: "error" };
   }
 
   async embed(
@@ -253,4 +390,152 @@ export class OllamaBackend implements Backend {
     }
     return total;
   }
+}
+
+// ---- Compat-mode helpers + types (mirrors LMStudioBackend's translator) ----
+
+interface OpenAIChunk {
+  model?: string;
+  choices?: Array<{
+    index?: number;
+    delta?: {
+      role?: string;
+      content?: string;
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        type?: string;
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
+    };
+    finish_reason?: string | null;
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+function mapFinishReason(
+  openaiReason: string
+): "end_turn" | "stop_sequence" | "max_tokens" | "tool_use" | "error" {
+  switch (openaiReason) {
+    case "stop":
+      return "end_turn";
+    case "length":
+      return "max_tokens";
+    case "tool_calls":
+    case "function_call":
+      return "tool_use";
+    case "content_filter":
+      return "error";
+    default:
+      return "end_turn";
+  }
+}
+
+/**
+ * Translate a NormalizedRequest to an OpenAI-compatible /v1/chat/completions
+ * body (flat sampling-params, single `max_tokens`, `stop`, OpenAI tool/message
+ * shape). Image and document content blocks are silently skipped because the
+ * compat layer is text/JSON-only here.
+ */
+function buildCompatBody(req: NormalizedRequest): Record<string, unknown> {
+  const messages: Array<Record<string, unknown>> = [];
+
+  if (req.system) {
+    messages.push({ role: "system", content: req.system });
+  }
+
+  for (const msg of req.messages) {
+    const toolUseBlocks = msg.content.filter(
+      (b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use"
+    );
+    const toolResultBlocks = msg.content.filter(
+      (b): b is Extract<typeof b, { type: "tool_result" }> =>
+        b.type === "tool_result"
+    );
+    const textBlocks = msg.content.filter(
+      (b): b is Extract<typeof b, { type: "text" }> => b.type === "text"
+    );
+
+    for (const tr of toolResultBlocks) {
+      messages.push({
+        role: "tool",
+        tool_call_id: tr.toolUseId,
+        content: tr.content
+      });
+    }
+
+    if (toolUseBlocks.length > 0) {
+      const textContent = textBlocks.map((b) => b.text).join("\n");
+      messages.push({
+        role: "assistant",
+        content: textContent.length > 0 ? textContent : null,
+        tool_calls: toolUseBlocks.map((tu) => ({
+          id: tu.id,
+          type: "function",
+          function: {
+            name: tu.name,
+            arguments: typeof tu.input === "string"
+              ? tu.input
+              : JSON.stringify(tu.input ?? {})
+          }
+        }))
+      });
+    } else if (textBlocks.length > 0) {
+      messages.push({
+        role: msg.role,
+        content: textBlocks.map((b) => b.text).join("\n")
+      });
+    }
+  }
+
+  const body: Record<string, unknown> = {
+    model: req.model,
+    messages,
+    stream: true
+  };
+
+  if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
+
+  if (req.samplingParams?.temperature !== undefined)
+    body.temperature = req.samplingParams.temperature;
+  if (req.samplingParams?.topP !== undefined)
+    body.top_p = req.samplingParams.topP;
+  if (req.samplingParams?.topK !== undefined)
+    body.top_k = req.samplingParams.topK;
+
+  if (req.stopSequences && req.stopSequences.length > 0) {
+    body.stop = req.stopSequences;
+  }
+
+  if (req.tools && req.tools.length > 0) {
+    body.tools = req.tools.map((t) => ({
+      type: "function",
+      function: {
+        name: t.name,
+        ...(t.description !== undefined ? { description: t.description } : {}),
+        parameters: t.inputSchema
+      }
+    }));
+  }
+
+  if (req.toolChoice !== undefined) {
+    if (req.toolChoice === "auto") body.tool_choice = "auto";
+    else if (req.toolChoice === "any") body.tool_choice = "required";
+    else if (req.toolChoice === "none") body.tool_choice = "none";
+    else if (typeof req.toolChoice === "object" && req.toolChoice.type === "tool") {
+      body.tool_choice = {
+        type: "function",
+        function: { name: req.toolChoice.name }
+      };
+    }
+  }
+
+  return body;
 }
