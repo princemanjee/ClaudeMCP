@@ -77,12 +77,27 @@ async function readMultipart(req: Request): Promise<{
   mime: string;
   bytes: Buffer;
 }> {
+  const ct = req.headers["content-type"];
+  if (typeof ct !== "string") {
+    throw new Error("expected multipart/form-data or multipart/related");
+  }
+  if (ct.includes("multipart/form-data")) {
+    return readMultipartFormData(req);
+  }
+  if (ct.includes("multipart/related")) {
+    return readMultipartRelated(req);
+  }
+  throw new Error(
+    "expected multipart/form-data or multipart/related"
+  );
+}
+
+function readMultipartFormData(req: Request): Promise<{
+  filename: string;
+  mime: string;
+  bytes: Buffer;
+}> {
   return new Promise((resolve, reject) => {
-    const ct = req.headers["content-type"];
-    if (typeof ct !== "string" || !ct.includes("multipart/form-data")) {
-      reject(new Error("expected multipart/form-data"));
-      return;
-    }
     let resolved = false;
     const bb = Busboy({ headers: req.headers });
     bb.on("file", (_field, stream, info) => {
@@ -115,6 +130,116 @@ async function readMultipart(req: Request): Promise<{
     });
     req.pipe(bb);
   });
+}
+
+/**
+ * Parse the Google SDK's `multipart/related` upload envelope:
+ *
+ *   --<boundary>\r\n
+ *   Content-Type: application/json; charset=utf-8\r\n\r\n
+ *   {"file": {"mimeType": "...", "displayName": "..."}}\r\n
+ *   --<boundary>\r\n
+ *   Content-Type: <mime>\r\n\r\n
+ *   <raw bytes>\r\n
+ *   --<boundary>--
+ *
+ * The full body is buffered into memory (consistent with the existing
+ * `multipart/form-data` path which Busboy buffers via the FileStore upload
+ * sink); upload size is bounded by Express's `express.json` limit upstream
+ * plus FileStore's `maxTotalBytes`.
+ */
+function readMultipartRelated(req: Request): Promise<{
+  filename: string;
+  mime: string;
+  bytes: Buffer;
+}> {
+  return new Promise((resolve, reject) => {
+    const ct = req.headers["content-type"] as string;
+    const boundaryMatch = /boundary=("?)([^";]+)\1/i.exec(ct);
+    if (!boundaryMatch) {
+      reject(new Error("multipart/related missing boundary= parameter"));
+      return;
+    }
+    const boundary = boundaryMatch[2]!;
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("error", reject);
+    req.on("end", () => {
+      try {
+        const body = Buffer.concat(chunks);
+        const parts = splitMultipart(body, boundary);
+        if (parts.length < 2) {
+          reject(new Error("multipart/related expected metadata + file parts"));
+          return;
+        }
+        // Part 1 — JSON metadata (`{file: {mimeType, displayName}}`).
+        const metaJson = JSON.parse(parts[0]!.body.toString("utf8")) as {
+          file?: { mimeType?: string; displayName?: string };
+        };
+        // Part 2 — raw file bytes; Content-Type header gives the mime.
+        const fileHeaderMime = parts[1]!.headers["content-type"];
+        const mime =
+          (fileHeaderMime ? fileHeaderMime.split(";")[0]?.trim() : undefined) ||
+          metaJson.file?.mimeType ||
+          "application/octet-stream";
+        const filename = metaJson.file?.displayName ?? "upload.bin";
+        resolve({ filename, mime, bytes: parts[1]!.body });
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  });
+}
+
+interface MultipartPart {
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+function splitMultipart(body: Buffer, boundary: string): MultipartPart[] {
+  const delim = Buffer.from(`--${boundary}`);
+  const parts: MultipartPart[] = [];
+  let cursor = 0;
+  let idx = body.indexOf(delim, cursor);
+  if (idx < 0) return parts;
+  cursor = idx + delim.length;
+  while (cursor < body.length) {
+    // Skip CRLF after delimiter (or detect closing delimiter `--`).
+    if (body[cursor] === 0x2d && body[cursor + 1] === 0x2d) break; // "--"
+    if (body[cursor] === 0x0d && body[cursor + 1] === 0x0a) cursor += 2;
+    const nextIdx = body.indexOf(delim, cursor);
+    if (nextIdx < 0) break;
+    // Part is body[cursor .. nextIdx - 2] (trim trailing CRLF before delim).
+    let endOfPart = nextIdx;
+    if (
+      endOfPart >= 2 &&
+      body[endOfPart - 2] === 0x0d &&
+      body[endOfPart - 1] === 0x0a
+    ) {
+      endOfPart -= 2;
+    }
+    const partBuf = body.subarray(cursor, endOfPart);
+    // Split headers from body at the first \r\n\r\n.
+    const sep = partBuf.indexOf(Buffer.from("\r\n\r\n"));
+    let headers: Record<string, string> = {};
+    let bodyBytes: Buffer;
+    if (sep < 0) {
+      bodyBytes = partBuf;
+    } else {
+      const headerBlock = partBuf.subarray(0, sep).toString("utf8");
+      bodyBytes = partBuf.subarray(sep + 4);
+      for (const line of headerBlock.split(/\r?\n/)) {
+        const colon = line.indexOf(":");
+        if (colon < 0) continue;
+        headers[line.slice(0, colon).trim().toLowerCase()] = line
+          .slice(colon + 1)
+          .trim();
+      }
+    }
+    parts.push({ headers, body: bodyBytes });
+    cursor = nextIdx + delim.length;
+  }
+  return parts;
 }
 
 function resolveIdFromParam(idParam: string | undefined): {

@@ -129,11 +129,13 @@ export function buildApp(deps: ServerDeps): Express {
   const generateHandlers = createGenerateContentHandlers({
     registry: deps.registry,
     fileStore: deps.fileStore,
+    archive: deps.archive,
     config: geminiHandlerConfig
   });
   const geminiCountTokensHandler = createGeminiCountTokensHandler({
     registry: deps.registry,
     fileStore: deps.fileStore,
+    archive: deps.archive,
     config: geminiHandlerConfig
   });
 
@@ -191,6 +193,10 @@ export function buildApp(deps: ServerDeps): Express {
     config: { apiKey: deps.config.apiKey }
   });
   app.post("/v1beta/files", geminiFilesHandlers.upload);
+  // Google SDK (@google/generative-ai) posts uploads to /upload/v1beta/files
+  // with a `multipart/related` envelope. The same upload handler accepts both
+  // wire formats — this alias route just makes the URL surface match.
+  app.post("/upload/v1beta/files", geminiFilesHandlers.upload);
   app.get("/v1beta/files", geminiFilesHandlers.list);
   // Mount the :download route BEFORE the bare :id route to keep path-to-regexp
   // from greedily swallowing the `:download` suffix in :id.
@@ -213,6 +219,7 @@ export function buildApp(deps: ServerDeps): Express {
     "/v1/chat/completions",
     createChatCompletionsHandler({
       registry: deps.registry,
+      archive: deps.archive,
       config: {
         apiKey: openaiHandlerConfig.apiKey,
         router: openaiHandlerConfig.router
@@ -223,6 +230,7 @@ export function buildApp(deps: ServerDeps): Express {
     "/v1/embeddings",
     createEmbeddingsHandler({
       registry: deps.registry,
+      archive: deps.archive,
       config: openaiHandlerConfig
     })
   );
@@ -369,7 +377,9 @@ const DEFAULT_PORT = 3210;
  */
 export async function main(opts: MainOptions): Promise<RunningServer> {
   const config = loadConfig(opts.configPath);
-  const archive = new Archive(config.archive.dbPath);
+  const archive = new Archive(config.archive.dbPath, {
+    compressionLevel: config.archive.compressionLevel
+  });
   const fileStore = new FileStore({
     dir: config.files.dir,
     ttlMs: config.files.ttlMs,

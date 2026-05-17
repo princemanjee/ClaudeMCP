@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import http from "node:http";
+import { Archive } from "../../src/archive.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..", "..");
@@ -15,6 +16,7 @@ interface Spawned {
   proc: ChildProcess;
   port: number;
   workDir: string;
+  dbPath: string;
 }
 
 async function waitForReady(port: number, timeoutMs = 10000): Promise<void> {
@@ -40,6 +42,7 @@ async function waitForReady(port: number, timeoutMs = 10000): Promise<void> {
 async function startServer(): Promise<Spawned> {
   const workDir = mkdtempSync(join(tmpdir(), "claudemcp-gen-it-"));
   const cfgPath = join(workDir, "config.json");
+  const dbPath = join(workDir, "archive.sqlite");
   writeFileSync(
     cfgPath,
     JSON.stringify({
@@ -58,7 +61,7 @@ async function startServer(): Promise<Spawned> {
       },
       lmstudio: { enabled: false, instances: [] },
       ollama: { enabled: false, useNativeApi: false, instances: [] },
-      archive: { dbPath: join(workDir, "archive.sqlite"), compressionLevel: 3 },
+      archive: { dbPath, compressionLevel: 3 },
       files: { dir: join(workDir, "files"), ttlMs: 60000, maxTotalBytes: 1_000_000 },
       cache: { file: join(workDir, "cache.json"), ttlMs: 60000, maxEntries: 100 }
     })
@@ -80,7 +83,7 @@ async function startServer(): Promise<Spawned> {
   proc.stdout?.on("data", (d) => process.stdout.write(`[srv] ${d}`));
   proc.stderr?.on("data", (d) => process.stderr.write(`[srv-err] ${d}`));
   await waitForReady(port);
-  return { proc, port, workDir };
+  return { proc, port, workDir, dbPath };
 }
 
 async function stopServer(s: Spawned): Promise<void> {
@@ -270,5 +273,51 @@ describe("Gemini shim — :generateContent integration (cross-backend)", () => {
     const names = models.map((m) => m.name);
     expect(names).toContain("models/gemini-pro");
     expect(names).toContain("models/claude-opus-4-7");
+  }, 30_000);
+
+  it("generateContent and countTokens requests are archived", async () => {
+    const genRes = await postJson(
+      s.port,
+      "/v1beta/models/gemini-pro:generateContent",
+      { contents: [{ role: "user", parts: [{ text: "gem-archive-needle" }] }] }
+    );
+    expect(genRes.status).toBe(200);
+    const ctRes = await postJson(
+      s.port,
+      "/v1beta/models/gemini-pro:countTokens",
+      { contents: [{ role: "user", parts: [{ text: "count-archive-needle" }] }] }
+    );
+    expect(ctRes.status).toBe(200);
+
+    // Fire-and-forget archive writes — give the event loop a tick to drain.
+    await new Promise((r) => setTimeout(r, 250));
+
+    const archive = new Archive(s.dbPath);
+    try {
+      const page = archive.list({ limit: 100, offset: 0 });
+      const genEntry = page.data.find(
+        (e) =>
+          e.endpoint === "/v1beta/models/gemini-pro:generateContent" &&
+          e.backend === "gemini" &&
+          JSON.stringify(e.requestBody).includes("gem-archive-needle")
+      );
+      expect(
+        genEntry,
+        "expected archive entry for :generateContent"
+      ).toBeDefined();
+
+      const ctEntry = page.data.find(
+        (e) =>
+          e.endpoint === "/v1beta/models/gemini-pro:countTokens" &&
+          e.backend === "gemini" &&
+          JSON.stringify(e.requestBody).includes("count-archive-needle")
+      );
+      expect(
+        ctEntry,
+        "expected archive entry for :countTokens"
+      ).toBeDefined();
+    } finally {
+      archive.close();
+    }
   }, 30_000);
 });

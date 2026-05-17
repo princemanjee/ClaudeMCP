@@ -1,9 +1,12 @@
 import type { Request, RequestHandler, Response } from "express";
+import { randomUUID } from "node:crypto";
 import { checkAuth, type AuthCarrier } from "../auth.js";
+import type { Archive, ArchiveStatus } from "../archive.js";
 import type { BackendRegistry } from "../backends/registry.js";
 import type { Backend, BackendId } from "../backends/types.js";
 import type { FileStore } from "../fileStore.js";
 import { identifyBackend } from "../modelRouter.js";
+import { recordCompletion } from "../admin/recordCompletion.js";
 import {
   internalError,
   invalidArgumentError,
@@ -26,6 +29,8 @@ export interface CountTokensHandlerDeps {
   registry: BackendRegistry;
   fileStore: FileStore;
   config: CountTokensHandlerConfig;
+  /** Optional — when omitted, archive writes are skipped. */
+  archive?: Archive;
 }
 
 function resolveBackend(
@@ -53,7 +58,23 @@ export function createCountTokensHandler(
       return;
     }
 
-    const body = req.body as GeminiGenerateContentRequest;
+    // Google SDK (@google/generative-ai) wraps countTokens requests as
+    // `{generateContentRequest: {contents: [...]}}`. The REST API and direct
+    // curl users send the bare `{contents: [...]}` shape. Unwrap one level
+    // when the wrapper is present and the bare form is absent — keeping the
+    // existing translator pathway unchanged.
+    const rawBody = req.body as
+      | (GeminiGenerateContentRequest & {
+          generateContentRequest?: GeminiGenerateContentRequest;
+        })
+      | undefined;
+    const body =
+      rawBody &&
+      typeof rawBody === "object" &&
+      rawBody.contents === undefined &&
+      rawBody.generateContentRequest !== undefined
+        ? rawBody.generateContentRequest
+        : (rawBody as GeminiGenerateContentRequest);
     let normalized;
     try {
       normalized = await geminiRequestToNormalized(body, model, deps.fileStore);
@@ -78,12 +99,36 @@ export function createCountTokensHandler(
       return;
     }
 
+    const startedAt = Date.now();
+    const endpoint = `/v1beta/models/${model}:countTokens`;
+    const logId = `ct_${randomUUID().replace(/-/g, "")}`;
+    let archivedBody: unknown = null;
+    let archivedStatus: ArchiveStatus = "ok";
+
     try {
       const totalTokens = await backend.countTokens(normalized);
       const out: GeminiCountTokensResponse = { totalTokens };
+      archivedBody = out;
       res.status(200).json(out);
     } catch (e) {
-      res.status(500).json(internalError(e instanceof Error ? e.message : String(e)));
+      const msg = e instanceof Error ? e.message : String(e);
+      archivedStatus = "error";
+      archivedBody = { error: { message: msg } };
+      res.status(500).json(internalError(msg));
+    } finally {
+      if (deps.archive) {
+        recordCompletion(deps.archive, {
+          endpoint,
+          backend: backend.id,
+          modelResolved: normalized.model,
+          logId,
+          startedAtMs: startedAt,
+          durationMs: Date.now() - startedAt,
+          status: archivedStatus,
+          requestBody: req.body as unknown,
+          responseBody: archivedBody
+        });
+      }
     }
   };
 }

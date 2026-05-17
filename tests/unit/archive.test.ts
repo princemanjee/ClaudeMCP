@@ -219,6 +219,56 @@ describe("Archive.recordEntry — typed writer", () => {
       archive.close();
     }
   });
+
+  it("compressionLevel option affects stored blob size", () => {
+    // Build a deterministic English-like pseudo-random payload that is large
+    // enough and varied enough that zstd levels 1 vs 22 produce visibly
+    // different blob sizes (a small fully-repeating string converges to the
+    // same compressed size at every level).
+    const words = [
+      "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
+      "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+      "india", "juliet"
+    ];
+    let seed = 42;
+    let body = "";
+    for (let i = 0; i < 50000; i++) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      body += words[seed % words.length] + " ";
+    }
+    const payload = sampleEntry({
+      requestBody: { text: body },
+      responseBody: { text: body }
+    });
+
+    const lowPath = join(dir, "low.sqlite");
+    const highPath = join(dir, "high.sqlite");
+    const archiveLow = new Archive(lowPath, { compressionLevel: 1 });
+    const archiveHigh = new Archive(highPath, { compressionLevel: 22 });
+    try {
+      archiveLow.recordEntry(payload);
+      archiveHigh.recordEntry(payload);
+
+      const lowSize = (
+        archiveLow
+          .raw()
+          .prepare("SELECT LENGTH(request_body) AS n FROM entries")
+          .get() as { n: number }
+      ).n;
+      const highSize = (
+        archiveHigh
+          .raw()
+          .prepare("SELECT LENGTH(request_body) AS n FROM entries")
+          .get() as { n: number }
+      ).n;
+
+      // Higher zstd level produces a smaller blob for the same content.
+      expect(highSize).toBeLessThan(lowSize);
+    } finally {
+      archiveLow.close();
+      archiveHigh.close();
+    }
+  });
 });
 
 describe("Archive — query + prune", () => {

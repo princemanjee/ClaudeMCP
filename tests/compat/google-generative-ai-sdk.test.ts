@@ -103,35 +103,48 @@ describe.each(BACKENDS)("Google GenerativeAI SDK x %s backend", (backend) => {
   }, 30000);
 
   // ---- countTokens --------------------------------------------------------
-  // The Google SDK's model.countTokens(...) always wraps the request as
-  // {generateContentRequest: {contents: [...]}}. The Gemini shim's
-  // /v1beta/models/:model[:]countTokens handler only accepts the bare
-  // {contents: [...]} shape and rejects the wrapped form with
-  // "contents is required and must be an array". This is a real shim
-  // limitation surfaced exactly as Plan 13 is designed to surface envelope
-  // drift. Skipped here; documented in plan-13-readme deviations.
+  // The Google SDK's model.countTokens(...) wraps the request as
+  // {generateContentRequest: {contents: [...]}}. The Gemini shim now unwraps
+  // that envelope so the bare {contents} translator path applies (the same
+  // bare shape that direct curl callers use is also still accepted).
 
-  it.skip(
-    "countTokens skipped — Gemini shim does not accept SDK's {generateContentRequest} wrapper",
-    () => {
-      /* See deviations: shim accepts only bare {contents}; SDK wraps. */
-    }
-  );
+  it("countTokens returns {totalTokens} for the SDK's wrapped envelope", async () => {
+    const model = client.getGenerativeModel(
+      { model: modelId },
+      { baseUrl: handle.baseURL }
+    );
+    const result = await model.countTokens("count these tokens please");
+    expect(typeof result.totalTokens).toBe("number");
+    expect(result.totalTokens).toBeGreaterThan(0);
+  }, 30000);
 
   // ---- files lifecycle ----------------------------------------------------
-  // The Google SDK's GoogleAIFileManager.uploadFile uses Google's
-  // resumable-upload protocol: POST /upload/v1beta/files with a multipart
-  // body and a two-step init+upload handshake. The Gemini shim implements
-  // only the simpler /v1beta/files surface used by direct curl uploads; it
-  // does not mount /upload/v1beta/files. The SDK fails with 404 on upload.
-  // List/get/delete operations on /v1beta/files DO work (they're exercised
-  // via crossShimFiles integration tests), but cannot be tested through the
-  // SDK without a successful upload first. Documented in plan-13-readme.
+  // The Google SDK's GoogleAIFileManager.uploadFile posts a one-shot
+  // `multipart/related` body to `/upload/v1beta/files`. The shim now mounts
+  // that alias and accepts the SDK's multipart shape (the simpler curl-style
+  // `multipart/form-data` POST to `/v1beta/files` continues to work).
 
-  it.skip(
-    "files.* lifecycle skipped — shim does not mount /upload/v1beta/files",
-    () => {
-      /* See deviations: SDK upload uses resumable /upload/ surface. */
+  it("files.uploadFile via the SDK round-trips through /upload/v1beta/files", async () => {
+    const { GoogleAIFileManager } = await import(
+      "@google/generative-ai/server"
+    );
+    const fm = new GoogleAIFileManager(handle.apiKey, {
+      baseUrl: handle.baseURL
+    });
+    const buf = Buffer.from("compat google-sdk upload bytes");
+    const uploaded = await fm.uploadFile(buf, {
+      mimeType: "text/plain",
+      displayName: "compat-upload.txt"
+    });
+    expect(uploaded.file?.name?.startsWith("files/")).toBe(true);
+    expect(uploaded.file?.mimeType).toBe("text/plain");
+    // Cleanup so other backend iterations start from a clean store.
+    if (uploaded.file?.name) {
+      try {
+        await fm.deleteFile(uploaded.file.name);
+      } catch {
+        /* best effort */
+      }
     }
-  );
+  }, 30000);
 });
