@@ -102,4 +102,14 @@ describe("Archive schema management", () => {
     new Archive(nested).close();
     expect(() => new Database(nested, { readonly: true }).close()).not.toThrow();
   });
+
+  it("WAL mode pragma succeeded (smoke check)", () => {
+    const archive = new Archive(dbPath);
+    archive.close();
+
+    const db = new Database(dbPath, { readonly: true });
+    const mode = db.pragma("journal_mode", { simple: true }) as string;
+    expect(mode).toBe("wal");
+    db.close();
+  });
 });

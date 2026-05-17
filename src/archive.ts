@@ -2,6 +2,15 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+// Schema version: 1.
+//
+// This schema is applied idempotently via CREATE TABLE IF NOT EXISTS and
+// CREATE INDEX IF NOT EXISTS. There is no automatic migration path — if you
+// change the schema, existing databases will silently retain the old shape.
+// To reset: delete the dbPath file (default data/archive.sqlite) and let the
+// next process startup recreate it. Plan 05 writers must not assume any
+// column they add here will be present on databases created by earlier
+// versions of the code.
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entries (
   id              INTEGER PRIMARY KEY,
@@ -32,7 +41,11 @@ export class Archive {
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
+    const mode = this.db.pragma("journal_mode = WAL", { simple: true }) as string;
+    if (mode !== "wal") {
+      this.db.close();
+      throw new Error(`Archive: expected WAL journal mode, got "${mode}"`);
+    }
     this.db.exec(SCHEMA_SQL);
   }
 
