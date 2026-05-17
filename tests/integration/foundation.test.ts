@@ -75,23 +75,55 @@ describe("Plan 01 foundation cooperates end-to-end", () => {
       archive.close();
     }
 
-    // Registry + router
+    // Registry + router.
+    // NOTE: claude/gemini priorities live on cfg.<backend>.priority because those
+    // backends are single-instance. lmstudio/ollama priorities live per-instance
+    // in cfg.<backend>.instances[*].priority — in Plan 01 we use literal defaults
+    // here since the per-instance map isn't materialized until a real HTTP backend
+    // registers in Plan 08+.
     const registry = new BackendRegistry({
       claude: cfg.claude.priority,
       gemini: cfg.gemini.priority,
       lmstudio: 50,
       ollama: 40
     });
-    registry.register(stubBackend("claude", ["claude-opus-4-7"]));
-    registry.register(stubBackend("ollama", ["llama-3.3-70b"]));
+
+    // Register two stubs that share a model id ("shared-model") to exercise
+    // the priority-based collision resolution end-to-end.
+    registry.register(
+      stubBackend("claude", ["claude-opus-4-7", "shared-model"])
+    );
+    registry.register(stubBackend("ollama", ["llama-3.3-70b", "shared-model"]));
     await registry.probe();
 
+    // Direct alias hit — router resolves without registry lookup.
     const directHit = identifyBackend("claude-opus-4-7", cfg.router.defaultBackend);
     expect(directHit.backend).toBe("claude");
 
+    // Bare local model — router defers to registry, which resolves to ollama.
     const lookupNeeded = identifyBackend("llama-3.3-70b", cfg.router.defaultBackend);
     expect(lookupNeeded.backend).toBeNull();
     expect(registry.resolveModel(lookupNeeded.remainingModel)?.id).toBe("ollama");
+
+    // Collision: both backends advertised "shared-model" — claude (priority
+    // 100) outranks ollama (priority 40), so claude must win.
+    expect(registry.resolveModel("shared-model")?.id).toBe("claude");
+
+    // End-to-end stream contract: invoke the resolved backend, collect events.
+    const resolved = registry.resolveModel("claude-opus-4-7");
+    expect(resolved).toBeDefined();
+    const events: NormalizedEvent[] = [];
+    for await (const ev of resolved!.invoke({
+      model: "claude-opus-4-7",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }]
+    })) {
+      events.push(ev);
+    }
+    expect(events.map((e) => e.kind)).toEqual([
+      "message_start",
+      "text_delta",
+      "message_stop"
+    ]);
 
     registry.stop();
   });
