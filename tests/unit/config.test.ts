@@ -60,7 +60,8 @@ describe("loadConfig", () => {
         router: { defaultBackend: "bogus" }
       },
       (path) => {
-        expect(() => loadConfig(path)).toThrow(/defaultBackend/);
+        expect(() => loadConfig(path)).toThrow(/claude.*gemini.*lmstudio.*ollama/);
+        expect(() => loadConfig(path)).toThrow(/bogus/);
       }
     );
   });
@@ -120,6 +121,30 @@ describe("loadConfig", () => {
         } finally {
           delete process.env.CLAUDE_MCP_API_KEY;
         }
+      }
+    );
+  });
+
+  it("rejects reasoningEffortMap with unknown key (typo)", () => {
+    withTempConfig(
+      {
+        apiKey: "sk-test",
+        claude: { enabled: true, command: "claude" },
+        gemini: { enabled: false, command: "gemini" },
+        lmstudio: { enabled: false, instances: [] },
+        ollama: { enabled: false, useNativeApi: false, instances: [] },
+        router: {
+          defaultBackend: "claude",
+          reasoningEffortMap: {
+            claude: { midium: "claude-sonnet-4-6" },
+            gemini: {},
+            lmstudio: {},
+            ollama: {}
+          }
+        }
+      },
+      (path) => {
+        expect(() => loadConfig(path)).toThrow(/low.*medium.*high/);
       }
     );
   });

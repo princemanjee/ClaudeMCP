@@ -66,18 +66,18 @@ const ConfigSchema = z
           }),
         reasoningEffortMap: z
           .object({
-            claude: z.record(z.string()).default({
+            claude: z.record(z.enum(["low", "medium", "high"]), z.string()).default({
               low: "claude-haiku-4-5",
               medium: "claude-sonnet-4-6",
               high: "claude-opus-4-7"
             }),
-            gemini: z.record(z.string()).default({
+            gemini: z.record(z.enum(["low", "medium", "high"]), z.string()).default({
               low: "gemini-flash-lite",
               medium: "gemini-flash",
               high: "gemini-pro"
             }),
-            lmstudio: z.record(z.string()).default({}),
-            ollama: z.record(z.string()).default({})
+            lmstudio: z.record(z.enum(["low", "medium", "high"]), z.string()).default({}),
+            ollama: z.record(z.enum(["low", "medium", "high"]), z.string()).default({})
           })
           .default({
             claude: {
