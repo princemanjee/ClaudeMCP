@@ -21,6 +21,7 @@
  * `client.models.list()` should set `baseURL` to include `/anthropic`.
  */
 import express, { type Express, type RequestHandler } from "express";
+import cookieParser from "cookie-parser";
 import type { Server } from "node:http";
 import { Archive } from "./archive.js";
 import { BackendRegistry } from "./backends/registry.js";
@@ -31,6 +32,7 @@ import { OllamaBackend } from "./backends/ollamaBackend.js";
 import { FileStore } from "./fileStore.js";
 import { ResponseCache } from "./responseCache.js";
 import { loadConfig, type Config } from "./config.js";
+import { checkApiKey } from "./auth.js";
 import { createCountTokensHandler } from "./anthropicShim/countTokens.js";
 import { createMessagesHandler } from "./anthropicShim/messages.js";
 import { createModelsHandlers } from "./anthropicShim/models.js";
@@ -44,6 +46,8 @@ import { createEmbeddingsHandler } from "./openaiShim/embeddings.js";
 import { createOpenAIModelsHandlers } from "./openaiShim/models.js";
 import { ConfigSnapshotStore } from "./admin/configSnapshot.js";
 import { mountAdminRoutes } from "./admin/router.js";
+import { SessionStore } from "./admin/session.js";
+import { createAdminUiHandler, readSessionCookie } from "./admin/ui.js";
 
 export interface ServerDeps {
   config: Config;
@@ -52,6 +56,8 @@ export interface ServerDeps {
   fileStore: FileStore;
   responseCache: ResponseCache;
   configSnapshot: ConfigSnapshotStore;
+  /** Plan 12: optional SessionStore. If omitted, buildApp constructs one. */
+  sessionStore?: SessionStore;
 }
 
 /**
@@ -61,6 +67,13 @@ export interface ServerDeps {
 export function buildApp(deps: ServerDeps): Express {
   const app = express();
   app.use(express.json({ limit: "32mb" }));
+  // Plan 12: cookie-parser populates req.cookies for the session-cookie path.
+  app.use(cookieParser());
+
+  // Plan 12: SessionStore — in-memory, TTL-evicted token map for admin UI sessions.
+  const sessionStore =
+    deps.sessionStore ??
+    new SessionStore({ ttlMs: deps.config.adminUi.sessionTtlMs });
 
   app.get("/health", (_req, res) => {
     res.status(200).json({ status: "ok" });
@@ -221,6 +234,49 @@ export function buildApp(deps: ServerDeps): Express {
   app.get("/v1/models", openaiModelsHandlers.list);
   app.get("/v1/models/:id", openaiModelsHandlers.get);
 
+  // ---- Admin UI (Plan 12) — mount BEFORE the /admin catch-all -----------
+  // The /admin/ui Router serves static SPA assets + POST/DELETE /session,
+  // none of which require auth (the page is inert without an apiKey, and the
+  // POST /session endpoint IS the login). Because Express matches mounts in
+  // declaration order, mounting /admin/ui first keeps it reachable while
+  // every JSON /admin/* endpoint stays gated by the sessionAuthMiddleware +
+  // per-handler checkAuth below.
+  if (deps.config.adminUi.enabled) {
+    app.use(
+      "/admin/ui",
+      createAdminUiHandler({
+        sessionStore,
+        config: {
+          apiKey: deps.config.apiKey,
+          adminUi: deps.config.adminUi
+        },
+        checkApiKey
+      })
+    );
+  }
+
+  // Plan 12: sessionAuthMiddleware — when a valid session cookie is present
+  // on an /admin/* request, synthesize an x-api-key header so the existing
+  // per-handler checkAuth (which inspects the carrier headers) succeeds. If
+  // the cookie is absent or invalid, the request falls through unchanged —
+  // x-api-key bearing requests authenticate normally; everything else is
+  // 401'd by the per-handler auth gate.
+  const sessionAuthMiddleware: express.RequestHandler = (req, _res, next) => {
+    // Already authenticated via x-api-key header — nothing to do.
+    if (typeof req.headers["x-api-key"] === "string" && req.headers["x-api-key"].length > 0) {
+      next();
+      return;
+    }
+    const token = readSessionCookie(req);
+    if (token && sessionStore.validate(token)) {
+      // Promote the cookie session to an x-api-key header for downstream
+      // handlers. This keeps the existing per-handler auth unchanged.
+      req.headers["x-api-key"] = deps.config.apiKey;
+    }
+    next();
+  };
+  app.use("/admin", sessionAuthMiddleware);
+
   // ---- Admin routes (Plan 05 + Plan 11) -------------------------------
   mountAdminRoutes(app, {
     archive: deps.archive,
@@ -300,6 +356,7 @@ export interface RunningServer {
   responseCache: ResponseCache;
   config: Config;
   configSnapshot: ConfigSnapshotStore;
+  sessionStore: SessionStore;
   shutdown: () => Promise<void>;
 }
 
@@ -328,6 +385,19 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
     initial: config,
     path: opts.configPath
   });
+  // Plan 12: SessionStore + periodic sweep. Construct here so we own the
+  // interval and can clear it at shutdown.
+  const sessionStore = new SessionStore({ ttlMs: config.adminUi.sessionTtlMs });
+  const sessionSweepInterval = setInterval(() => sessionStore.sweep(), 60_000);
+  sessionSweepInterval.unref();
+
+  if (config.adminUi.enabled && !config.adminUi.bindLocalhost) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[startup] WARNING: config.adminUi.bindLocalhost=false; the admin UI accepts " +
+        "requests from any IP. This is a security concession — confirm intentional."
+    );
+  }
 
   const app = buildApp({
     config,
@@ -335,7 +405,8 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
     archive,
     fileStore,
     responseCache,
-    configSnapshot
+    configSnapshot,
+    sessionStore
   });
   const port = opts.port ?? DEFAULT_PORT;
   const http = app.listen(port);
@@ -354,6 +425,7 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
     registry.stop();
     fileStore.stop();
     archive.close();
+    clearInterval(sessionSweepInterval);
     await new Promise<void>((resolve) => {
       const force = setTimeout(() => resolve(), 5000);
       http.close(() => {
@@ -380,6 +452,7 @@ export async function main(opts: MainOptions): Promise<RunningServer> {
     responseCache,
     config,
     configSnapshot,
+    sessionStore,
     shutdown
   };
 }
