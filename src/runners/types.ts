@@ -33,7 +33,25 @@ export interface ClaudeRunResult {
   stderr: string;
 }
 
+import type { NormalizedToolDef } from "../backends/types.js";
+
 export interface ClaudeStreamOptions extends Omit<ClaudeRunOptions, never> {
   /** Optional system prompt passed via `--system`. */
   systemPrompt?: string;
+  /**
+   * Tool definitions to expose to the CLI. When non-empty, serialized as JSON
+   * and passed via `--tools <json>`. The CLI's expected flag and format is
+   * documented as an OPEN QUESTION in the Plan 04 spec — the value may need
+   * to be a file path, stdin, or a different flag name when verified against
+   * the real CLI surface.
+   */
+  tools?: NormalizedToolDef[];
+  /**
+   * Stop sequences. Passed verbatim to the CLI via `--stop-sequences <json>`
+   * AND used by the stream runner's local cutter for the server-side-cut
+   * capability (see Task 4). Both layers are belt-and-braces: if the CLI
+   * honors the flag natively, the cutter is a no-op; if it doesn't, the
+   * cutter terminates the child on the first match.
+   */
+  stopSequences?: string[];
 }

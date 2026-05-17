@@ -67,6 +67,74 @@ describe("buildStreamArgs", () => {
       })
     ).toContain("--dangerously-skip-permissions");
   });
+
+  it("emits --tools <json> when tools is non-empty", () => {
+    const args = buildStreamArgs({
+      prompt: "hi",
+      tools: [
+        {
+          name: "calculator",
+          description: "Adds numbers",
+          inputSchema: { type: "object", properties: { x: { type: "number" } } }
+        }
+      ],
+      timeoutMs: 1000,
+      claudeCommand: "claude"
+    });
+    expect(args).toContain("--tools");
+    const json = args[args.indexOf("--tools") + 1];
+    expect(typeof json).toBe("string");
+    const parsed = JSON.parse(json as string) as Array<{ name: string }>;
+    expect(parsed[0]?.name).toBe("calculator");
+  });
+
+  it("omits --tools when tools is undefined or empty", () => {
+    expect(
+      buildStreamArgs({
+        prompt: "hi",
+        timeoutMs: 1000,
+        claudeCommand: "claude"
+      })
+    ).not.toContain("--tools");
+    expect(
+      buildStreamArgs({
+        prompt: "hi",
+        tools: [],
+        timeoutMs: 1000,
+        claudeCommand: "claude"
+      })
+    ).not.toContain("--tools");
+  });
+
+  it("emits --stop-sequences <json> when stopSequences is non-empty", () => {
+    const args = buildStreamArgs({
+      prompt: "hi",
+      stopSequences: ["STOP", "END"],
+      timeoutMs: 1000,
+      claudeCommand: "claude"
+    });
+    expect(args).toContain("--stop-sequences");
+    const json = args[args.indexOf("--stop-sequences") + 1];
+    expect(JSON.parse(json as string)).toEqual(["STOP", "END"]);
+  });
+
+  it("omits --stop-sequences when stopSequences is undefined or empty", () => {
+    expect(
+      buildStreamArgs({
+        prompt: "hi",
+        timeoutMs: 1000,
+        claudeCommand: "claude"
+      })
+    ).not.toContain("--stop-sequences");
+    expect(
+      buildStreamArgs({
+        prompt: "hi",
+        stopSequences: [],
+        timeoutMs: 1000,
+        claudeCommand: "claude"
+      })
+    ).not.toContain("--stop-sequences");
+  });
 });
 
 describe("runClaudeStream (against mock-claude)", () => {

@@ -15,6 +15,12 @@ export function buildStreamArgs(opts: ClaudeStreamOptions): string[] {
   }
   args.push("-p", opts.prompt);
   args.push("--output-format", "stream-json");
+  if (opts.tools && opts.tools.length > 0) {
+    args.push("--tools", JSON.stringify(opts.tools));
+  }
+  if (opts.stopSequences && opts.stopSequences.length > 0) {
+    args.push("--stop-sequences", JSON.stringify(opts.stopSequences));
+  }
   if (opts.dangerouslySkipPermissions) {
     args.push("--dangerously-skip-permissions");
   } else if (opts.allowedTools !== undefined) {
