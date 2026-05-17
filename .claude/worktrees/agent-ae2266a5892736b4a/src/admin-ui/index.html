@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ClaudeMCP Admin</title>
+  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI+PGNpcmNsZSBjeD0iOCIgY3k9IjgiIHI9IjciIGZpbGw9IiNlOTFlNjMiLz48L3N2Zz4=" />
+  <!-- Bootstrap theme attribute before paint to prevent FOUC. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("claudemcp-theme");
+        if (!t) {
+          t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) { /* private mode */ }
+    })();
+  </script>
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./themes/light.css" />
+  <link rel="stylesheet" href="./themes/dark.css" />
+  <!--
+    Alpine.js pinned at 3.15.12 from jsDelivr with SRI hash. To bump:
+      curl -sL https://cdn.jsdelivr.net/npm/alpinejs@<VER>/dist/cdn.min.js \
+        | openssl dgst -sha384 -binary | openssl base64 -A
+    Prepend "sha384-" and paste into the integrity attribute below.
+  -->
+  <script
+    defer
+    src="https://cdn.jsdelivr.net/npm/alpinejs@3.15.12/dist/cdn.min.js"
+    integrity="sha384-pb6hrQvo4s23cEUFtj0CZkzGE3jyK3pj26RIupXXxhSrrcUA/Cn0lZgcCrGH0t6L"
+    crossorigin="anonymous"
+  ></script>
+  <script src="./app.js"></script>
+</head>
+<body>
+  <div id="app" x-data="app()" x-cloak>
+
+    <!-- Login screen (shown until x-show="!isLoggedIn"). -->
+    <template x-if="!isLoggedIn">
+      <main class="login-shell">
+        <div class="glass-card login-card">
+          <h1>ClaudeMCP</h1>
+          <p class="muted">Sign in with your admin API key.</p>
+          <form @submit.prevent="login()">
+            <label for="apikey">API Key</label>
+            <input id="apikey" type="password" x-model="apiKeyInput" autocomplete="current-password" autofocus />
+            <button type="submit" class="primary" :disabled="loggingIn" x-text="loggingIn ? 'Signing in…' : 'Sign in'"></button>
+            <p class="error" x-show="loginError" x-text="loginError"></p>
+          </form>
+          <button type="button" class="ghost theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'">
+            <span x-html="theme === 'dark' ? ICONS.sun : ICONS.moon"></span>
+          </button>
+        </div>
+      </main>
+    </template>
+
+    <!-- Authenticated shell. -->
+    <template x-if="isLoggedIn">
+      <div class="app-shell">
+
+        <!-- Top bar (sticky). -->
+        <header class="top-bar glass-card">
+          <div class="brand">
+            <span class="brand-mark" x-html="ICONS.logo"></span>
+            <span class="brand-text">ClaudeMCP</span>
+          </div>
+          <h1 class="page-title" x-text="panelTitle()"></h1>
+          <nav class="backend-health">
+            <template x-for="b in backendHealthPills" :key="b.name">
+              <span class="status-pill" :class="'status-' + b.color">
+                <span class="dot"></span>
+                <span x-text="b.name"></span>
+              </span>
+            </template>
+          </nav>
+          <div class="top-bar-actions">
+            <button type="button" class="ghost theme-toggle" @click="toggleTheme()" :title="theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'">
+              <span x-html="theme === 'dark' ? ICONS.sun : ICONS.moon"></span>
+            </button>
+            <button type="button" class="ghost" @click="logout()" title="Sign out">
+              <span x-html="ICONS.logout"></span>
+            </button>
+          </div>
+        </header>
+
+        <!-- Sidebar. -->
+        <aside class="sidebar glass-card">
+          <template x-for="p in panels" :key="p.id">
+            <button
+              class="nav-item"
+              :class="{ active: activePanel === p.id }"
+              @click="setPanel(p.id)"
+            >
+              <span class="nav-icon" x-html="ICONS[p.icon]"></span>
+              <span class="nav-label" x-text="p.label"></span>
+            </button>
+          </template>
+        </aside>
+
+        <!-- Main content. One panel visible at a time. -->
+        <main class="content">
+          <section x-show="activePanel === 'dashboard'" x-data="dashboardPanel()" x-init="init()" x-destroy="destroy()">
+            <div class="tile-grid">
+              <template x-for="b in backends" :key="b.id">
+                <article class="glass-card tile">
+                  <header class="tile-header">
+                    <span class="status-pill" :class="'status-' + statusColor(b)">
+                      <span class="dot"></span>
+                      <span x-text="b.id"></span>
+                    </span>
+                  </header>
+                  <dl class="tile-stats">
+                    <dt>Loaded models</dt><dd x-text="modelsCount(b)"></dd>
+                    <dt>Requests (last hour)</dt><dd x-text="requestCounts[b.id] ?? '—'"></dd>
+                    <dt>Last probe</dt><dd x-text="formatTime(lastProbeAt(b))"></dd>
+                  </dl>
+                </article>
+              </template>
+              <template x-if="backends.length === 0">
+                <p class="muted">No backends enabled. Configure one on the Backends panel.</p>
+              </template>
+            </div>
+          </section>
+          <section x-show="activePanel === 'backends'" x-data="backendsPanel()" x-init="init()" x-destroy="destroy()">
+            <template x-if="loading"><p class="muted">Loading config…</p></template>
+            <template x-if="error"><p class="error" x-text="error"></p></template>
+
+            <template x-if="!loading && draft">
+              <div class="backends-grid">
+
+                <!-- Single-instance CLI backends -->
+                <template x-for="bid in ['claude', 'gemini']" :key="bid">
+                  <article class="glass-card backend-block">
+                    <header class="backend-header">
+                      <h2 x-text="bid"></h2>
+                      <label class="toggle"><input type="checkbox" x-model="draft[bid].enabled"> enabled</label>
+                    </header>
+                    <div class="form-grid">
+                      <label>Command<input type="text" x-model="draft[bid].command"></label>
+                      <label>Priority<input type="number" x-model.number="draft[bid].priority"></label>
+                      <label>Timeout (ms)<input type="number" x-model.number="draft[bid].timeoutMs"></label>
+                    </div>
+                  </article>
+                </template>
+
+                <!-- Multi-instance HTTP backends -->
+                <template x-for="bid in ['lmstudio', 'ollama']" :key="bid">
+                  <article class="glass-card backend-block">
+                    <header class="backend-header">
+                      <h2 x-text="bid"></h2>
+                      <label class="toggle"><input type="checkbox" x-model="draft[bid].enabled"> enabled</label>
+                      <template x-if="bid === 'ollama'">
+                        <label class="toggle">
+                          <input type="checkbox" x-model="draft[bid].useNativeApi"> useNativeApi (backend default)
+                        </label>
+                      </template>
+                      <button type="button" class="ghost" @click="addInstance(bid)">
+                        <span x-html="ICONS.plus"></span> Add instance
+                      </button>
+                    </header>
+
+                    <template x-for="(inst, idx) in draft[bid].instances" :key="bid + ':' + idx">
+                      <div class="instance-card glass-card">
+                        <div class="form-grid">
+                          <label>Name<input type="text" x-model="inst.name"></label>
+                          <label>Base URL<input type="text" x-model="inst.baseUrl"></label>
+                          <label>
+                            API Key
+                            <div class="input-with-toggle">
+                              <input :type="showApiKey[bid+'/'+inst.name] ? 'text' : 'password'" x-model="inst.apiKey">
+                              <button type="button" class="ghost" @click="showApiKey[bid+'/'+inst.name] = !showApiKey[bid+'/'+inst.name]" x-text="showApiKey[bid+'/'+inst.name] ? 'Hide' : 'Show'"></button>
+                            </div>
+                          </label>
+                          <label>Priority<input type="number" x-model.number="inst.priority"></label>
+                          <label>Timeout (ms)<input type="number" x-model.number="inst.timeoutMs"></label>
+                          <template x-if="bid === 'ollama'">
+                            <label>useNativeApi
+                              <select x-model="inst.useNativeApi">
+                                <option :value="null">inherit</option>
+                                <option :value="true">true</option>
+                                <option :value="false">false</option>
+                              </select>
+                            </label>
+                          </template>
+                        </div>
+
+                        <div class="instance-actions">
+                          <button type="button" class="ghost" @click="testConnection(bid, inst)">Test connection</button>
+                          <span class="test-result" :class="testing[bid+'/'+inst.name] ? testing[bid+'/'+inst.name].status : ''" x-text="testing[bid+'/'+inst.name] ? testing[bid+'/'+inst.name].message : ''"></span>
+                          <button type="button" class="danger" @click="removeInstance(bid, idx)">
+                            <span x-html="ICONS.trash"></span> Remove
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+
+                    <details>
+                      <summary>Discovered models (<span x-text="modelsForBackend(bid).length"></span>)</summary>
+                      <ul class="model-list">
+                        <template x-for="m in modelsForBackend(bid)" :key="m.id || m">
+                          <li x-text="m.id || m"></li>
+                        </template>
+                      </ul>
+                    </details>
+                  </article>
+                </template>
+
+                <footer class="save-bar glass-card" x-show="isDirty()">
+                  <button type="button" class="ghost" @click="reprobe()">
+                    <span x-html="ICONS.refresh"></span> Reprobe all
+                  </button>
+                  <button type="button" class="ghost" @click="discard()">Discard</button>
+                  <button type="button" class="primary" @click="save()">Save changes</button>
+                </footer>
+              </div>
+            </template>
+          </section>
+          <section x-show="activePanel === 'router'" x-data="routerPanel()" x-init="init()" x-destroy="destroy()">
+            <template x-if="loading"><p class="muted">Loading…</p></template>
+            <template x-if="error"><p class="error" x-text="error"></p></template>
+
+            <template x-if="!loading && draft">
+              <div class="glass-card" style="padding: 24px;">
+                <h2>Routing</h2>
+                <div class="form-grid">
+                  <label>Default backend
+                    <select x-model="draft.router.defaultBackend">
+                      <template x-for="b in allBackends()" :key="b">
+                        <option :value="b" x-text="b"></option>
+                      </template>
+                    </select>
+                  </label>
+                  <label>opusPromptTokens
+                    <input type="number" x-model.number="draft.router.thresholds.opusPromptTokens">
+                  </label>
+                  <label>opusToolCount
+                    <input type="number" x-model.number="draft.router.thresholds.opusToolCount">
+                  </label>
+                  <label>sonnetPromptTokens
+                    <input type="number" x-model.number="draft.router.thresholds.sonnetPromptTokens">
+                  </label>
+                </div>
+
+                <h3 style="margin-top: 24px;">Reasoning-effort maps</h3>
+                <template x-for="bid in allBackends()" :key="bid">
+                  <div class="effort-map-block">
+                    <header><strong x-text="bid"></strong>
+                      <button type="button" class="ghost" @click="addEffortMapping(bid)">
+                        <span x-html="ICONS.plus"></span> Add mapping
+                      </button>
+                    </header>
+                    <template x-for="(modelId, tier) in (draft.router.reasoningEffortMap && draft.router.reasoningEffortMap[bid]) || {}" :key="bid + ':' + tier">
+                      <div class="effort-row">
+                        <span class="muted" x-text="tier"></span>
+                        <select x-model="draft.router.reasoningEffortMap[bid][tier]">
+                          <option value="">(choose model)</option>
+                          <template x-for="m in modelsForBackend(bid)" :key="m">
+                            <option :value="m" x-text="m"></option>
+                          </template>
+                        </select>
+                        <button type="button" class="danger" @click="removeEffortMapping(bid, tier)">
+                          <span x-html="ICONS.trash"></span>
+                        </button>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+
+                <footer class="save-bar" x-show="isDirty()" style="margin-top: 24px;">
+                  <button type="button" class="ghost" @click="discard()">Discard</button>
+                  <button type="button" class="primary" @click="save()">Save changes</button>
+                </footer>
+              </div>
+            </template>
+          </section>
+          <section x-show="activePanel === 'general'" x-data="generalPanel()" x-init="init()">
+            <template x-if="loading"><p class="muted">Loading…</p></template>
+            <template x-if="error"><p class="error" x-text="error"></p></template>
+
+            <template x-if="!loading && draft">
+              <div class="glass-card" style="padding: 24px;">
+
+                <h2>API key</h2>
+                <div class="form-grid">
+                  <label>Current
+                    <input type="text" value="***" disabled>
+                  </label>
+                  <label>Set new API key (leave blank to keep)
+                    <input type="password" x-model="newApiKey" autocomplete="new-password">
+                  </label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Archive</h2>
+                <div class="form-grid">
+                  <label>DB path<input type="text" x-model="draft.archive.dbPath"></label>
+                  <label>Compression level<input type="number" x-model.number="draft.archive.compressionLevel"></label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Cache</h2>
+                <div class="form-grid">
+                  <label>File<input type="text" x-model="draft.cache.file"></label>
+                  <label>TTL (ms)<input type="number" x-model.number="draft.cache.ttlMs"></label>
+                  <label>Max entries<input type="number" x-model.number="draft.cache.maxEntries"></label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Files</h2>
+                <div class="form-grid">
+                  <label>Dir<input type="text" x-model="draft.files.dir"></label>
+                  <label>TTL (ms)<input type="number" x-model.number="draft.files.ttlMs"></label>
+                  <label>Max total bytes<input type="number" x-model.number="draft.files.maxTotalBytes"></label>
+                </div>
+
+                <h2 style="margin-top: 24px;">Admin UI</h2>
+                <div class="form-grid">
+                  <label class="toggle">
+                    <input type="checkbox" :checked="draft.adminUi.bindLocalhost" @change="requestBindToggle($event.target.checked)">
+                    bindLocalhost
+                  </label>
+                  <label>sessionTtlMs<input type="number" x-model.number="draft.adminUi.sessionTtlMs"></label>
+                </div>
+
+                <footer class="save-bar" x-show="isDirty()" style="margin-top: 24px;">
+                  <button type="button" class="ghost" @click="discard()">Discard</button>
+                  <button type="button" class="primary" @click="save()">Save changes</button>
+                </footer>
+              </div>
+            </template>
+
+            <!-- Bind-localhost confirmation modal -->
+            <template x-if="showBindConfirm">
+              <div class="modal-overlay" @click.self="cancelBindToggle()">
+                <div class="modal glass-card">
+                  <h2>Disable localhost binding?</h2>
+                  <p>
+                    With bindLocalhost off, the admin UI accepts requests from any IP address.
+                    This exposes config editing — including the apiKey set form — to the local
+                    network. Only proceed if you have other network controls in place (firewall,
+                    reverse-proxy auth, etc.).
+                  </p>
+                  <div class="modal-actions">
+                    <button type="button" class="ghost" @click="cancelBindToggle()">Cancel</button>
+                    <button type="button" class="danger" @click="confirmBindToggle()">Disable bindLocalhost</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </section>
+          <section x-show="activePanel === 'archive'" x-data="archivePanel()" x-init="init()">
+            <div class="glass-card" style="padding: 16px;">
+              <div class="filters-bar">
+                <label>Backend
+                  <select x-model="filters.backend" @change="onFilterChange()">
+                    <option value="">all</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="lmstudio">lmstudio</option>
+                    <option value="ollama">ollama</option>
+                  </select>
+                </label>
+                <label>Session<input type="text" x-model="filters.session" @input.debounce.300ms="onFilterChange()"></label>
+                <label>Model<input type="text" x-model="filters.model" @input.debounce.300ms="onFilterChange()"></label>
+                <label>Since<input type="datetime-local" x-model="filters.since" @change="onFilterChange()"></label>
+                <label>Until<input type="datetime-local" x-model="filters.until" @change="onFilterChange()"></label>
+                <label>Status
+                  <select x-model="filters.status" @change="onFilterChange()">
+                    <option value="">any</option>
+                    <option value="ok">ok</option>
+                    <option value="error">error</option>
+                    <option value="timeout">timeout</option>
+                  </select>
+                </label>
+                <label>Search
+                  <div class="input-with-toggle">
+                    <span class="search-icon" x-html="ICONS.search"></span>
+                    <input type="search" placeholder="substring in request bodies" x-model="searchQuery" @input="onSearchInput()">
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div class="glass-card" style="padding: 0; margin-top: 16px; overflow: hidden;">
+              <template x-if="loading"><p class="muted" style="padding: 16px;">Loading…</p></template>
+              <template x-if="error"><p class="error" style="padding: 16px;" x-text="error"></p></template>
+              <table class="archive-table" x-show="!loading && rows.length > 0">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th><th>Backend</th><th>Model</th><th>Endpoint</th>
+                    <th>Session</th><th>Status</th><th>Tokens (in/out)</th><th>Dur</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="row in rows" :key="row.id">
+                    <tr @click="openDetail(row)">
+                      <td x-text="formatTime(row.timestamp)"></td>
+                      <td x-text="row.backend"></td>
+                      <td x-text="row.modelResolved || ''"></td>
+                      <td x-text="row.endpoint"></td>
+                      <td x-text="row.sessionId || ''"></td>
+                      <td x-text="row.status"></td>
+                      <td x-text="(row.inputTokens ?? '?') + '/' + (row.outputTokens ?? '?')"></td>
+                      <td x-text="(row.durationMs ?? '?') + 'ms'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+              <template x-if="!loading && rows.length === 0">
+                <p class="muted" style="padding: 16px;">No entries.</p>
+              </template>
+
+              <div class="pagination" style="padding: 12px;">
+                <button class="ghost" :disabled="page === 0" @click="prevPage()">Prev</button>
+                <span x-text="`Page ${page + 1}${hasMore ? '' : ' (last)'}`"></span>
+                <button class="ghost" :disabled="!hasMore" @click="nextPage()">Next</button>
+              </div>
+            </div>
+
+            <template x-if="detail || detailLoading">
+              <div class="modal-overlay" @click.self="closeDetail()">
+                <div class="modal glass-card">
+                  <header class="modal-header">
+                    <h2>Archive entry</h2>
+                    <button type="button" class="ghost" @click="closeDetail()">
+                      <span x-html="ICONS.close"></span>
+                    </button>
+                  </header>
+                  <template x-if="detailLoading"><p class="muted">Loading…</p></template>
+                  <template x-if="detail">
+                    <div>
+                      <h3>Metadata</h3>
+                      <pre x-text="prettyJSON({ id: detail.id, backend: detail.backend, model: detail.modelResolved, endpoint: detail.endpoint, sessionId: detail.sessionId, status: detail.status, durationMs: detail.durationMs, inputTokens: detail.inputTokens, outputTokens: detail.outputTokens, timestamp: detail.timestamp })"></pre>
+                      <h3>Request</h3>
+                      <pre x-text="prettyJSON(detail.requestBody)"></pre>
+                      <h3>Response</h3>
+                      <pre x-text="prettyJSON(detail.responseBody)"></pre>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </section>
+        </main>
+
+      </div>
+    </template>
+  </div>
+</body>
+</html>

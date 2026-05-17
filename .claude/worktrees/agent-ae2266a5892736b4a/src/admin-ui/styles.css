@@ -1,0 +1,430 @@
+/* ============================================================
+   ClaudeMCP Admin UI base styles. Every color reads from a
+   CSS custom property declared in themes/{light,dark}.css.
+   ============================================================ */
+
+/* ============================================================
+   1. RESET + BASE
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; min-height: 100vh; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  color: var(--text-primary);
+  background: transparent;
+  overflow-x: hidden;
+  line-height: 1.4;
+}
+[x-cloak] { display: none !important; }
+.muted { color: var(--text-muted); }
+h1, h2, h3, h4 { color: var(--text-primary); }
+h2 { margin: 0 0 12px; font-size: 20px; }
+h3 { margin: 0 0 8px; font-size: 16px; }
+
+/* ============================================================
+   2. VIEWPORT GRADIENT + DECORATIVE BLOBS
+   ============================================================ */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background: linear-gradient(
+    135deg,
+    var(--bg-gradient-start) 0%,
+    var(--bg-gradient-mid) 50%,
+    var(--bg-gradient-end) 100%
+  );
+  background-size: 200% 200%;
+  animation: gradient-drift 60s ease-in-out infinite;
+}
+body::after {
+  content: "";
+  position: fixed;
+  top: -10%;
+  right: -10%;
+  width: 40vmax;
+  height: 40vmax;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-secondary) 0%, transparent 60%);
+  opacity: 0.18;
+  z-index: -1;
+  filter: blur(40px);
+  pointer-events: none;
+}
+@keyframes gradient-drift {
+  0%, 100% { background-position: 0% 0%; }
+  50% { background-position: 100% 100%; }
+}
+
+/* ============================================================
+   3. LAYOUT GRID
+   ============================================================ */
+.app-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "top top"
+    "side main";
+  gap: 16px;
+  padding: 16px;
+  min-height: 100vh;
+}
+.top-bar { grid-area: top; }
+.sidebar { grid-area: side; align-self: start; position: sticky; top: 16px; }
+.content { grid-area: main; min-width: 0; }
+
+@media (max-width: 1024px) {
+  .app-shell { grid-template-columns: 64px 1fr; }
+  .sidebar .nav-label { display: none; }
+}
+@media (max-width: 768px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-areas: "top" "main";
+  }
+  .sidebar { display: none; }
+}
+
+/* ============================================================
+   4. TOP BAR + SIDEBAR
+   ============================================================ */
+.top-bar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 20px;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.brand-mark { width: 24px; height: 24px; color: var(--accent); display: inline-flex; }
+.brand-mark svg { width: 100%; height: 100%; }
+.page-title { font-size: 16px; font-weight: 500; margin: 0 auto 0 0; color: var(--text-muted); }
+.backend-health { display: flex; gap: 8px; flex-wrap: wrap; }
+.top-bar-actions { display: flex; gap: 8px; }
+
+.sidebar {
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  border-radius: var(--button-radius);
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+.nav-item:hover { background: var(--glass-bg); }
+.nav-item.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  color: white;
+}
+.nav-icon { width: 18px; height: 18px; display: inline-flex; }
+.nav-icon svg { width: 100%; height: 100%; }
+
+/* ============================================================
+   5. GLASS CARD
+   ============================================================ */
+.glass-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow-soft);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.glass-card:hover { transform: translateY(-2px); }
+
+/* ============================================================
+   6. BUTTONS
+   ============================================================ */
+button {
+  font: inherit;
+  cursor: pointer;
+}
+button.primary {
+  padding: 10px 18px;
+  border: 0;
+  border-radius: var(--button-radius);
+  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  color: white;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+button.primary:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2); }
+button.primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+button.ghost {
+  padding: 8px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--button-radius);
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  backdrop-filter: blur(10px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+button.ghost:hover { background: var(--glass-border); }
+button.ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+button.ghost svg { width: 14px; height: 14px; }
+
+button.danger {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: var(--button-radius);
+  background: var(--status-red);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+button.danger svg { width: 14px; height: 14px; }
+
+/* ============================================================
+   7. INPUTS + SELECTS
+   ============================================================ */
+input[type="text"], input[type="password"], input[type="number"], input[type="search"], select, textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--button-radius);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font: inherit;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+input:focus, select:focus, textarea:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--ring);
+}
+input:disabled { opacity: 0.6; cursor: not-allowed; }
+label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
+label.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 0; }
+label.toggle input[type="checkbox"] { width: auto; }
+
+/* ============================================================
+   8. STATUS PILLS
+   ============================================================ */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-green); }
+.status-pill.status-green  .dot { background: var(--status-green); }
+.status-pill.status-yellow .dot { background: var(--status-yellow); }
+.status-pill.status-red    .dot { background: var(--status-red); }
+
+/* ============================================================
+   9. TABLES (archive viewer)
+   ============================================================ */
+.archive-table { width: 100%; border-collapse: collapse; }
+.archive-table th, .archive-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--glass-border);
+  font-size: 13px;
+}
+.archive-table th { color: var(--text-muted); font-weight: 500; }
+.archive-table tr { cursor: pointer; transition: background-color 0.1s ease; }
+.archive-table tr:hover { background: var(--glass-bg); }
+
+/* ============================================================
+   10. MODALS
+   ============================================================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--modal-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(8px);
+}
+.modal {
+  max-width: min(900px, 90vw);
+  max-height: 85vh;
+  overflow: auto;
+  padding: 24px;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+/* ============================================================
+   11. LOGIN SHELL
+   ============================================================ */
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.login-card { max-width: 400px; width: 100%; padding: 32px; position: relative; }
+.login-card h1 { margin: 0 0 8px; font-size: 28px; }
+.login-card .muted { color: var(--text-muted); margin: 0 0 24px; }
+.login-card form { display: grid; gap: 16px; }
+.login-card .theme-toggle {
+  position: absolute; top: 16px; right: 16px; padding: 6px;
+}
+.error { color: var(--status-red); font-size: 13px; margin: 0; }
+
+/* ============================================================
+   12. PREFERS-REDUCED-MOTION
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+  .glass-card { transition: none; }
+  .glass-card:hover { transform: none; }
+  button.primary { transition: none; }
+  button.primary:hover { transform: none; }
+}
+
+/* ============================================================
+   PANEL-SPECIFIC: ARCHIVE
+   ============================================================ */
+.filters-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.search-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  padding: 0 8px;
+}
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.modal pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--input-bg);
+  padding: 12px;
+  border-radius: var(--button-radius);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+/* ============================================================
+   PANEL-SPECIFIC: ROUTER
+   ============================================================ */
+.effort-map-block {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--button-radius);
+}
+.effort-map-block header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.effort-row {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+/* ============================================================
+   PANEL-SPECIFIC: BACKENDS
+   ============================================================ */
+.backends-grid { display: grid; gap: 16px; }
+.backend-block { padding: 20px; }
+.backend-header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.backend-header h2 { text-transform: capitalize; margin: 0; flex: 0 0 auto; }
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 16px;
+}
+.instance-card { padding: 16px; margin: 12px 0; }
+.instance-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.input-with-toggle { display: flex; gap: 8px; }
+.input-with-toggle input { flex: 1; }
+.model-list {
+  list-style: none;
+  padding: 0 0 0 12px;
+  margin: 8px 0 0;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+.test-result.ok      { color: var(--status-green); font-size: 12px; }
+.test-result.fail    { color: var(--status-red);   font-size: 12px; }
+.test-result.pending { color: var(--text-muted);   font-size: 12px; }
+.save-bar {
+  position: sticky;
+  bottom: 16px;
+  padding: 12px 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  z-index: 10;
+}
+
+/* ============================================================
+   14. PANEL-SPECIFIC: DASHBOARD
+   ============================================================ */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+.tile { padding: 20px; }
+.tile-header { margin-bottom: 16px; }
+.tile-stats {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+.tile-stats dt { color: var(--text-muted); }
+.tile-stats dd { margin: 0; font-weight: 500; text-align: right; }
+
+/* ============================================================
+   13. BACKDROP-FILTER FALLBACK
+   ============================================================ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-card { background: var(--glass-bg-fallback); }
+}

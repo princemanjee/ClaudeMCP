@@ -1,0 +1,9 @@
+{
+  "name": "mock-claude",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "mock-claude": "./index.mjs"
+  }
+}
