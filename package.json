@@ -10,12 +10,14 @@
     "start": "node dist/bin.js --config configs/default.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:visual": "RUN_VISUAL=1 playwright test tests/integration/adminUi.visual.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "better-sqlite3": "^11.5.0",
     "busboy": "^1.6.0",
+    "cookie-parser": "^1.4.6",
     "cross-spawn": "^7.0.6",
     "express": "^4.21.1",
     "tree-kill": "^1.2.2",
@@ -23,8 +25,10 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/busboy": "^1.5.4",
+    "@types/cookie-parser": "^1.4.7",
     "@types/cross-spawn": "^6.0.6",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.0",
