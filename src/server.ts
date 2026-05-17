@@ -369,7 +369,9 @@ const DEFAULT_PORT = 3210;
  */
 export async function main(opts: MainOptions): Promise<RunningServer> {
   const config = loadConfig(opts.configPath);
-  const archive = new Archive(config.archive.dbPath);
+  const archive = new Archive(config.archive.dbPath, {
+    compressionLevel: config.archive.compressionLevel
+  });
   const fileStore = new FileStore({
     dir: config.files.dir,
     ttlMs: config.files.ttlMs,

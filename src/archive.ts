@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
+import { constants as zlibConstants, zstdCompressSync, zstdDecompressSync } from "node:zlib";
 
 // Schema version: 1.
 //
@@ -93,12 +93,22 @@ interface RawEntryRow {
   response_body: Buffer;
 }
 
+export interface ArchiveOptions {
+  /**
+   * zstd compression level (1-22). Defaults to 3 (zstd's default) when omitted.
+   * Higher values yield smaller blobs at the cost of more CPU per write.
+   */
+  compressionLevel?: number;
+}
+
 export class Archive {
   private readonly db: Database.Database;
   private readonly insertStmt: Database.Statement;
   private readonly getByIdStmt: Database.Statement;
+  private readonly compressionLevel: number;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: ArchiveOptions = {}) {
+    this.compressionLevel = options.compressionLevel ?? 3;
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     const mode = this.db.pragma("journal_mode = WAL", { simple: true }) as string;
@@ -134,11 +144,16 @@ export class Archive {
   }
 
   recordEntry(entry: ArchiveEntry): number {
+    const zstdOpts = {
+      params: { [zlibConstants.ZSTD_c_compressionLevel]: this.compressionLevel }
+    };
     const requestBlob = zstdCompressSync(
-      Buffer.from(JSON.stringify(entry.requestBody))
+      Buffer.from(JSON.stringify(entry.requestBody)),
+      zstdOpts
     );
     const responseBlob = zstdCompressSync(
-      Buffer.from(JSON.stringify(entry.responseBody))
+      Buffer.from(JSON.stringify(entry.responseBody)),
+      zstdOpts
     );
     const info = this.insertStmt.run({
       requestHash: entry.requestHash,
