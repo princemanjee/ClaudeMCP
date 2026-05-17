@@ -1,6 +1,6 @@
-// Subset of the Anthropic Messages API shape that Plan 03 honors. Tool_use,
-// multimodal, cache_control, file references, and thinking blocks are
-// intentionally absent — the request translator rejects them with a 400.
+// Subset of the Anthropic Messages API shape. Plan 04 extends the union to
+// typed image/document/tool_use/tool_result variants and adds tool definitions
+// and tool_choice shapes.
 
 export type AnthropicRole = "user" | "assistant";
 
@@ -9,17 +9,84 @@ export interface AnthropicTextBlock {
   text: string;
 }
 
+// ---- Source shapes for image/document -----------------------------------
+
+export interface AnthropicBase64Source {
+  type: "base64";
+  media_type: string;
+  data: string;
+}
+
+export interface AnthropicUrlSource {
+  type: "url";
+  url: string;
+}
+
 /**
- * Content blocks the translator may encounter. Plan 03 only honors `text`;
- * the rest are listed so the type system catches handling additions in later
- * plans without losing exhaustiveness checks today.
+ * Anthropic also allows `{ type: "file"; file_id: "file_<hash>" }` for the
+ * Files API; Plan 04 admits the type but the request translator rejects it
+ * with a 400 until Plan 05 lands the file store. Listed here for the type
+ * system, not for honoring.
  */
+export interface AnthropicFileRefSource {
+  type: "file";
+  file_id: string;
+}
+
+export type AnthropicImageSource =
+  | AnthropicBase64Source
+  | AnthropicUrlSource
+  | AnthropicFileRefSource;
+export type AnthropicDocumentSource =
+  | AnthropicBase64Source
+  | AnthropicUrlSource
+  | AnthropicFileRefSource;
+
+// ---- Typed content block variants ---------------------------------------
+
+export interface AnthropicImageBlock {
+  type: "image";
+  source: AnthropicImageSource;
+}
+
+export interface AnthropicDocumentBlock {
+  type: "document";
+  source: AnthropicDocumentSource;
+}
+
+export interface AnthropicToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+/**
+ * `content` may be a plain string (shorthand) OR an array of nested content
+ * blocks (typically text). Anthropic's docs allow tool_result to also wrap
+ * images, but Plan 04 only honors the string and text-block-array shapes.
+ */
+export type AnthropicToolResultContent =
+  | string
+  | Array<AnthropicTextBlock>;
+
+export interface AnthropicToolResultBlock {
+  type: "tool_result";
+  tool_use_id: string;
+  content: AnthropicToolResultContent;
+  /**
+   * Optional flag Anthropic uses when the tool reported failure. Plan 04
+   * forwards into the prompt envelope; the model decides what to do with it.
+   */
+  is_error?: boolean;
+}
+
 export type AnthropicContentBlock =
   | AnthropicTextBlock
-  | { type: "image"; source: unknown }
-  | { type: "document"; source: unknown }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_use_id: string; content: unknown };
+  | AnthropicImageBlock
+  | AnthropicDocumentBlock
+  | AnthropicToolUseBlock
+  | AnthropicToolResultBlock;
 
 export interface AnthropicMessage {
   role: AnthropicRole;
@@ -28,6 +95,20 @@ export interface AnthropicMessage {
 }
 
 export type AnthropicSystem = string | AnthropicTextBlock[];
+
+// ---- Tool definitions + tool_choice -------------------------------------
+
+export interface AnthropicToolDef {
+  name: string;
+  description?: string;
+  input_schema: unknown; // JSON Schema
+}
+
+export type AnthropicToolChoice =
+  | { type: "auto" }
+  | { type: "any" }
+  | { type: "none" }
+  | { type: "tool"; name: string };
 
 export interface AnthropicMessagesRequest {
   model: string;
@@ -39,8 +120,8 @@ export interface AnthropicMessagesRequest {
   top_p?: number;
   top_k?: number;
   stop_sequences?: string[];
-  tools?: unknown[];
-  tool_choice?: unknown;
+  tools?: AnthropicToolDef[];
+  tool_choice?: AnthropicToolChoice;
   metadata?: Record<string, unknown>;
   thinking?: unknown;
 }
@@ -57,7 +138,16 @@ export interface AnthropicResponseTextBlock {
   text: string;
 }
 
-export type AnthropicResponseContentBlock = AnthropicResponseTextBlock;
+export interface AnthropicResponseToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+export type AnthropicResponseContentBlock =
+  | AnthropicResponseTextBlock
+  | AnthropicResponseToolUseBlock;
 
 export type AnthropicStopReason =
   | "end_turn"
