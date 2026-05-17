@@ -191,6 +191,14 @@ npm test
 
 The server starts on the configured port. Point your client at it using whichever protocol it already speaks.
 
+### Compatibility test suite
+
+`tests/compat/` exercises the real first-party SDKs (`@anthropic-ai/sdk`, `openai`, `@google/generative-ai`) against the running server with mock backends. These are the highest-signal "1:1 replacement" checks — if a wire envelope drifts, the SDK's own parser throws.
+
+Default `npm test` includes them. For faster iteration on a specific feature, run `npm run test:nocompat` (or `npm test -- --exclude 'tests/compat/**'`). The compat suite alone runs via `npm run test:compat`.
+
+The mock backends fulfill every request, so no real Anthropic / Google / LM Studio / Ollama installation is required.
+
 ## Scope notes
 
 This is designed for **personal use or trusted small-team local deployments**. It now has API key authentication, which means it can reasonably sit behind a reverse proxy on your LAN if that fits your use case. It still does not aim to be a multi-tenant SaaS gateway, and it does not implement rate limiting, quotas, or per-user accounting.
