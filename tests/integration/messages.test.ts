@@ -116,7 +116,7 @@ async function startServer(): Promise<InProcessServer> {
     })
   );
 
-  // Probe so the model map is populated for /v1/models.
+  // Probe so the model map is populated for /v1/anthropic/models.
   await registry.probe();
 
   const app = buildApp({ config, registry, archive });
@@ -192,9 +192,9 @@ describe("Anthropic shim — full HTTP stack against mock-claude", () => {
     expect(res.body.input_tokens).toBeGreaterThan(0);
   });
 
-  it("GET /v1/models lists at least the Claude catalog", async () => {
+  it("GET /v1/anthropic/models lists at least the Claude catalog", async () => {
     const res = await request(server.app)
-      .get("/v1/models")
+      .get("/v1/anthropic/models")
       .set("x-api-key", "sk-integration");
     expect(res.status).toBe(200);
     expect(res.body.has_more).toBe(false);
@@ -204,20 +204,31 @@ describe("Anthropic shim — full HTTP stack against mock-claude", () => {
     expect(ids).toContain("claude-haiku-4-5");
   });
 
-  it("GET /v1/models/{id} returns the matching entry", async () => {
+  it("GET /v1/anthropic/models/{id} returns the matching entry", async () => {
     const res = await request(server.app)
-      .get("/v1/models/claude-sonnet-4-6")
+      .get("/v1/anthropic/models/claude-sonnet-4-6")
       .set("x-api-key", "sk-integration");
     expect(res.status).toBe(200);
     expect(res.body.id).toBe("claude-sonnet-4-6");
     expect(res.body.type).toBe("model");
   });
 
-  it("GET /v1/models/{id} returns 404 on unknown id", async () => {
+  it("GET /v1/anthropic/models/{id} returns 404 on unknown id", async () => {
     const res = await request(server.app)
-      .get("/v1/models/does-not-exist")
+      .get("/v1/anthropic/models/does-not-exist")
       .set("x-api-key", "sk-integration");
     expect(res.status).toBe(404);
+  });
+
+  it("GET /v1/models returns the OpenAI-shaped envelope (Plan 10)", async () => {
+    const res = await request(server.app)
+      .get("/v1/models")
+      .set("x-api-key", "sk-integration");
+    expect(res.status).toBe(200);
+    expect(res.body.object).toBe("list");
+    expect(Array.isArray(res.body.data)).toBe(true);
+    const ids = (res.body.data as Array<{ id: string }>).map((d) => d.id);
+    expect(ids).toContain("claude-sonnet-4-6");
   });
 
   it("POST /v1/messages with no auth returns 401 + Anthropic envelope", async () => {
