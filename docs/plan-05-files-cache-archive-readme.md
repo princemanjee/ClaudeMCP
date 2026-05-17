@@ -84,4 +84,23 @@ Approximate new tests: **+71**. Total suite: **355 tests** (baseline 284 + 71). 
 
 ## Deviations from the as-designed plan
 
-See the trailing commit `docs(plan-05): record deviations from the as-designed plan` for the complete deviations log appended below.
+Plan 05 ran with 6 minor deviations from the plan as written. Documented for traceability:
+
+1. **`busboy` default import shape.** The plan's example code imports busboy as `import Busboy from "busboy"` and calls it as `Busboy({...})`. This works because `@types/busboy` exposes a default callable export; no implementation change, only worth noting that the type bundle's shape isn't documented in the plan.
+
+2. **`atomicWrite` writeSync branches are identical.** The plan's `atomicWrite` helper has separate branches for `typeof contents === "string"` and `Buffer`, but both call `writeSync(fd, contents)` identically. Kept the redundant `if`/`else` since the plan code spells it that way; consider compacting in a future pass.
+
+3. **Translator `cache_control` rejection removed.** Plan 04 added a translator-level reject for any content block with `cache_control` (with message `"cache_control is not supported in Plan 04 (lands in Plan 05)"`). Plan 05's Task 9 wires cache handling at the `messages.ts` layer, but the plan didn't explicitly tell Task 8 to remove the translator-level reject. Removed it as part of Task 8 since otherwise the integration would fail; converted the existing unit test from "rejects cache_control" into "passes cache_control through (silently stripped at normalization)". Documented in the test description.
+
+4. **`requestBody` archive shape changed from `body` to `{ raw, normalized }`.** Plan Task 9's code snippet writes `requestBody: body` (the raw incoming Anthropic body). Plan Task 12's integration test then expects to find the *inlined* base64 bytes in the archived `requestBody` — but the raw body still contains the `file_<hash>` reference, not the resolved bytes. The two tasks are internally inconsistent. Resolved by archiving `{ raw: body, normalized }` so both shapes are preserved; the test verifies the normalized side contains the inlined bytes. This means anyone reading the archive sees both the original request and the translator's resolved version, which seems strictly better than either alone.
+
+5. **`config.archive.compressionLevel` is parsed but unused.** The config schema exposes `compressionLevel: 3` and the plan's archive code calls `zstdCompressSync(buf)` with no params. The compression level option needs to be passed as a `{ params: { [constants.ZSTD_c_compressionLevel]: level } }` second arg per Node 22 docs. Left as-is to match the plan's code verbatim; flagged here for a small follow-up.
+
+6. **`messages.ts` Final-body type assertion via `unknown` cast.** The plan's response-cache cast `finalBody = await normalizedEventsToFinalResponse(...)` doesn't type-check directly because `AnthropicMessagesResponse` doesn't satisfy `Record<string, unknown>` (it has named fields, not an index signature). Used `as unknown as Record<string, unknown>` to bridge. A cleaner long-term fix is to widen `finalBody`'s declared type — call it out for a future pass.
+
+## Open follow-ups (forwarded from Plan-05 open questions)
+
+- **Node 22 zstd assumption holds.** Dev env reports Node v25.6.0; `node:zlib`'s `zstdCompressSync` / `zstdDecompressSync` work as expected. The fallback `@mongodb-js/zstd` was *not* needed.
+- **Streaming cache replay limits.** The synthesizer in `messages.ts` (`synthesizeEventsFromBody`) only emits `text_delta` events for `text` content blocks. Plan 04's `tool_use` content blocks will not replay correctly through the cache — they get a `message_start` + `message_stop` envelope with no tool deltas. Document or extend in a follow-up.
+- **`config.archive.compressionLevel` is currently a no-op** (see deviation 5 above).
+- **`Archive.searchText` is O(N) per query.** Acceptable for now; FTS5 swap-in is the natural follow-up once entries exceed ~10k.
