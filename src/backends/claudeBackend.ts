@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 import { runClaudeStream } from "../runners/claudeStreamRunner.js";
 import type { ClaudeStreamOptions } from "../runners/types.js";
+import { estimateRequestTokens } from "../tokenEstimator.js";
 
 export interface ClaudeBackendConfig {
   /** Either the executable name (e.g. "claude") or [executable, ...prefix-args]. */
@@ -44,32 +45,6 @@ const MODEL_CATALOG: ModelDescriptor[] = [
   }
 ];
 
-/**
- * Char-count token estimator. ceil(charCount / 4) is a standard rough
- * approximation for English-text BPE; later plans swap in `@anthropic-ai/tokenizer`
- * when the dependency is available, but for Plan 02 this is what ships.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
-function sumRequestTokens(req: NormalizedRequest): number {
-  let total = 0;
-  if (req.system) total += estimateTokens(req.system);
-  for (const msg of req.messages) {
-    for (const block of msg.content) {
-      if (block.type === "text") total += estimateTokens(block.text);
-      else if (block.type === "thinking") total += estimateTokens(block.text);
-      else if (block.type === "tool_use")
-        total += estimateTokens(JSON.stringify(block.input));
-      else if (block.type === "tool_result")
-        total += estimateTokens(block.content);
-      // image / document blocks: ignored for now; Plan 05 adds proper accounting.
-    }
-  }
-  return total;
-}
-
 export class ClaudeBackend implements Backend {
   readonly id = "claude" as const;
 
@@ -95,17 +70,17 @@ export class ClaudeBackend implements Backend {
   }
 
   async countTokens(req: NormalizedRequest): Promise<number> {
-    return sumRequestTokens(req);
+    return estimateRequestTokens(req);
   }
 
   async *invoke(
     req: NormalizedRequest
   ): AsyncIterable<NormalizedEvent> {
-    this.assertPlan02Scope(req);
-
     const streamOpts: ClaudeStreamOptions = {
       prompt: this.foldMessagesToPrompt(req),
-      systemPrompt: req.system,
+      systemPrompt: this.applyToolChoiceDirective(req.system, req.toolChoice),
+      tools: req.tools,
+      stopSequences: req.stopSequences,
       timeoutMs: this.config.timeoutMs,
       claudeCommand: this.config.command,
       dangerouslySkipPermissions: true
@@ -116,6 +91,8 @@ export class ClaudeBackend implements Backend {
     let textOpen = false;
     let inputTokens = 0;
     let outputTokens = 0;
+    let stopReason: Extract<NormalizedEvent, { kind: "message_stop" }>["stopReason"] =
+      "end_turn";
 
     for await (const raw of runClaudeStream(streamOpts)) {
       const ev = raw as {
@@ -123,10 +100,40 @@ export class ClaudeBackend implements Backend {
         subtype?: string;
         session_id?: string;
         model?: string;
-        message?: { content?: Array<{ type?: string; text?: string }> };
+        message?: {
+          content?: Array<{
+            type?: string;
+            text?: string;
+            id?: string;
+            name?: string;
+            input?: unknown;
+          }>;
+        };
         usage?: { input_tokens?: number; output_tokens?: number };
         is_error?: boolean;
+        matchedSequence?: string;
       };
+
+      // Stop-sequence sentinel (from claudeStreamRunner cutter).
+      if (ev.type === "_internal" && ev.subtype === "stop_sequence_match") {
+        if (textOpen) {
+          textIndex++;
+          textOpen = false;
+        }
+        if (!startEmitted) {
+          startEmitted = true;
+          yield { kind: "message_start", model: req.model };
+        }
+        yield {
+          kind: "message_stop",
+          stopReason: "stop_sequence",
+          usage:
+            inputTokens + outputTokens > 0
+              ? { inputTokens, outputTokens }
+              : undefined
+        };
+        return;
+      }
 
       if (ev.type === "system" && ev.subtype === "init") {
         if (!startEmitted) {
@@ -143,8 +150,36 @@ export class ClaudeBackend implements Backend {
         }
         for (const block of ev.message.content) {
           if (block.type === "text" && typeof block.text === "string") {
+            // Empty-text blocks happen when the cutter truncated at offset 0;
+            // skip them so we don't emit a zero-byte text_delta.
+            if (block.text.length === 0) continue;
             yield { kind: "text_delta", index: textIndex, text: block.text };
             textOpen = true;
+          } else if (
+            block.type === "tool_use" &&
+            typeof block.id === "string" &&
+            typeof block.name === "string"
+          ) {
+            // Close any open text block first so tool_use claims a fresh index.
+            if (textOpen) {
+              textIndex++;
+              textOpen = false;
+            }
+            const useIndex = textIndex;
+            textIndex++;
+            yield {
+              kind: "tool_use_start",
+              index: useIndex,
+              id: block.id,
+              name: block.name
+            };
+            yield {
+              kind: "tool_use_delta",
+              index: useIndex,
+              partialJson: JSON.stringify(block.input ?? {})
+            };
+            yield { kind: "tool_use_stop", index: useIndex };
+            stopReason = "tool_use";
           }
         }
         continue;
@@ -165,10 +200,11 @@ export class ClaudeBackend implements Backend {
         }
         yield {
           kind: "message_stop",
-          stopReason: ev.is_error ? "error" : "end_turn",
-          usage: inputTokens + outputTokens > 0
-            ? { inputTokens, outputTokens }
-            : undefined
+          stopReason: ev.is_error ? "error" : stopReason,
+          usage:
+            inputTokens + outputTokens > 0
+              ? { inputTokens, outputTokens }
+              : undefined
         };
         return;
       }
@@ -182,45 +218,81 @@ export class ClaudeBackend implements Backend {
     yield { kind: "message_stop", stopReason: "error" };
   }
 
-  // ---- Plan-02 scope helpers ---------------------------------------------
+  // ---- Helpers ----------------------------------------------------------
 
-  private assertPlan02Scope(req: NormalizedRequest): void {
-    if (req.tools && req.tools.length > 0) {
-      throw new Error(
-        "ClaudeBackend (Plan 02): native tool calling lands in Plan 04"
-      );
-    }
-    if (req.stopSequences && req.stopSequences.length > 0) {
-      throw new Error(
-        "ClaudeBackend (Plan 02): stop_sequences server-side cut lands in Plan 04"
-      );
-    }
-    for (const msg of req.messages) {
-      for (const block of msg.content) {
-        if (block.type === "image" || block.type === "document") {
-          throw new Error(
-            "ClaudeBackend (Plan 02): multimodal content lands in Plan 04"
-          );
-        }
-        if (block.type === "tool_use" || block.type === "tool_result") {
-          throw new Error(
-            "ClaudeBackend (Plan 02): tool_use/tool_result round-trip lands in Plan 04"
-          );
-        }
-      }
-    }
-  }
-
+  /**
+   * Serialize a NormalizedRequest's message history into a single prompt
+   * string suitable for the Claude CLI's `-p <prompt>` flag.
+   *
+   * Each message gets a leading `<role>:` line. Within a message, content
+   * blocks are concatenated in order. Non-text blocks use envelope markers
+   * that the CLI sees as plain text but a downstream model can recognize:
+   *   [image:<mediaType>;base64,<data>]
+   *   [document:<mediaType>;base64,<data>]
+   *   [tool_use:<id>:<name>]<json-input>[/tool_use]
+   *   [tool_result:<tool_use_id>]<content>[/tool_result]
+   *
+   * Empty messages (no usable content after serialization) are skipped.
+   */
   private foldMessagesToPrompt(req: NormalizedRequest): string {
     const lines: string[] = [];
     for (const msg of req.messages) {
-      const text = msg.content
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .filter((t) => t.length > 0)
-        .join("\n");
-      if (text.length === 0) continue;
-      lines.push(`${msg.role}: ${text}`);
+      const parts: string[] = [];
+      for (const block of msg.content) {
+        switch (block.type) {
+          case "text":
+            if (block.text.length > 0) parts.push(block.text);
+            break;
+          case "image":
+            parts.push(`[image:${block.mediaType};base64,${block.data}]`);
+            break;
+          case "document":
+            parts.push(`[document:${block.mediaType};base64,${block.data}]`);
+            break;
+          case "tool_use":
+            parts.push(
+              `[tool_use:${block.id}:${block.name}]${JSON.stringify(block.input)}[/tool_use]`
+            );
+            break;
+          case "tool_result":
+            parts.push(
+              `[tool_result:${block.toolUseId}]${block.content}[/tool_result]`
+            );
+            break;
+          case "thinking":
+            // Skip — thinking blocks are not user-facing on the request side.
+            break;
+        }
+      }
+      if (parts.length === 0) continue;
+      lines.push(`${msg.role}: ${parts.join("\n")}`);
     }
     return lines.join("\n\n");
+  }
+
+  /**
+   * Append the tool_choice system directive per the spec's enforcement
+   * table. Best-effort — the model usually honors but the CLI has no flag
+   * to force a specific tool name. Returns the system prompt unchanged for
+   * tool_choice "auto" or undefined.
+   */
+  private applyToolChoiceDirective(
+    system: string | undefined,
+    toolChoice: NormalizedRequest["toolChoice"]
+  ): string | undefined {
+    if (toolChoice === undefined || toolChoice === "auto") {
+      return system;
+    }
+    let directive: string;
+    if (toolChoice === "any") {
+      directive = "You must call exactly one tool this turn.";
+    } else if (toolChoice === "none") {
+      directive = "Do not call any tools this turn.";
+    } else {
+      // toolChoice is { type: "tool", name: "..." }
+      directive = `If you call a tool, only call \`${toolChoice.name}\`.`;
+    }
+    if (!system || system.length === 0) return directive;
+    return `${system}\n\n${directive}`;
   }
 }

@@ -106,7 +106,7 @@ describe("POST /v1/messages/count_tokens", () => {
     expect(res.body).toEqual({ input_tokens: 42 });
   });
 
-  it("rejects out-of-scope content (e.g. image) with 400", async () => {
+  it("accepts image content (Plan 04 scope: passthrough to backend)", async () => {
     const app = buildApp({
       apiKey: "sk-test",
       backend: stubBackend({ countTokensReturn: 1 })
@@ -125,6 +125,6 @@ describe("POST /v1/messages/count_tokens", () => {
           }
         ]
       });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
   });
 });

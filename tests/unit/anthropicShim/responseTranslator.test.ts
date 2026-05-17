@@ -257,3 +257,153 @@ describe("normalizedEventsToFinalResponse — non-streaming aggregation", () => 
     expect(resp.stop_reason).toBeNull();
   });
 });
+
+describe("normalizedEventsToSSE — tool_use blocks", () => {
+  it("emits content_block_start with type tool_use and empty input", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "tool_use_start", index: 0, id: "toolu_42", name: "calculator" },
+      { kind: "tool_use_delta", index: 0, partialJson: '{"x":1,"y":2}' },
+      { kind: "tool_use_stop", index: 0 },
+      { kind: "message_stop", stopReason: "tool_use" }
+    ];
+    const chunks = await collect(normalizedEventsToSSE(fromArray(events), META));
+    const parsed = chunks.map(parseSseChunk);
+    expect(parsed.map((p) => p.event)).toEqual([
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop"
+    ]);
+    expect(parsed[1]?.data).toEqual({
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "toolu_42", name: "calculator", input: {} }
+    });
+  });
+
+  it("emits content_block_delta with input_json_delta carrying the partial JSON", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "tool_use_start", index: 0, id: "toolu_1", name: "fn" },
+      { kind: "tool_use_delta", index: 0, partialJson: '{"x":' },
+      { kind: "tool_use_delta", index: 0, partialJson: "1}" },
+      { kind: "tool_use_stop", index: 0 },
+      { kind: "message_stop", stopReason: "tool_use" }
+    ];
+    const chunks = await collect(normalizedEventsToSSE(fromArray(events), META));
+    const deltas = chunks
+      .map(parseSseChunk)
+      .filter((p) => p.event === "content_block_delta")
+      .map((p) => p.data) as Array<{ delta: { type: string; partial_json: string } }>;
+    expect(deltas).toHaveLength(2);
+    expect(deltas[0]?.delta).toEqual({ type: "input_json_delta", partial_json: '{"x":' });
+    expect(deltas[1]?.delta).toEqual({ type: "input_json_delta", partial_json: "1}" });
+  });
+
+  it("maps stopReason 'stop_sequence' → stop_reason 'stop_sequence' on the wire", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "text_delta", index: 0, text: "partial" },
+      { kind: "message_stop", stopReason: "stop_sequence" }
+    ];
+    const chunks = await collect(normalizedEventsToSSE(fromArray(events), META));
+    const messageDelta = chunks
+      .map(parseSseChunk)
+      .find((p) => p.event === "message_delta");
+    expect(messageDelta).toBeDefined();
+    expect(
+      (messageDelta?.data as { delta: { stop_reason: string } }).delta.stop_reason
+    ).toBe("stop_sequence");
+  });
+
+  it("handles interleaved text and tool_use blocks with separate indexes", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "text_delta", index: 0, text: "let me compute: " },
+      { kind: "tool_use_start", index: 1, id: "toolu_1", name: "calc" },
+      { kind: "tool_use_delta", index: 1, partialJson: '{"x":3}' },
+      { kind: "tool_use_stop", index: 1 },
+      { kind: "message_stop", stopReason: "tool_use" }
+    ];
+    const chunks = await collect(normalizedEventsToSSE(fromArray(events), META));
+    const sequence = chunks.map(parseSseChunk).map((p) => p.event);
+    expect(sequence).toEqual([
+      "message_start",
+      "content_block_start", // index 0 text
+      "content_block_delta", // index 0 text delta
+      "content_block_start", // index 1 tool_use
+      "content_block_delta", // index 1 input_json_delta
+      "content_block_stop", // index 1 tool_use_stop
+      "content_block_stop", // index 0 text auto-close
+      "message_delta",
+      "message_stop"
+    ]);
+  });
+});
+
+describe("normalizedEventsToFinalResponse — tool_use aggregation", () => {
+  it("aggregates a tool_use block into content[] with parsed input", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "tool_use_start", index: 0, id: "toolu_1", name: "calc" },
+      { kind: "tool_use_delta", index: 0, partialJson: '{"x":1,' },
+      { kind: "tool_use_delta", index: 0, partialJson: '"y":2}' },
+      { kind: "tool_use_stop", index: 0 },
+      { kind: "message_stop", stopReason: "tool_use" }
+    ];
+    const resp = await normalizedEventsToFinalResponse(fromArray(events), META);
+    expect(resp.content).toEqual([
+      { type: "tool_use", id: "toolu_1", name: "calc", input: { x: 1, y: 2 } }
+    ]);
+    expect(resp.stop_reason).toBe("tool_use");
+  });
+
+  it("aggregates mixed text and tool_use blocks in order", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "text_delta", index: 0, text: "computing now: " },
+      { kind: "tool_use_start", index: 1, id: "toolu_1", name: "calc" },
+      { kind: "tool_use_delta", index: 1, partialJson: '{"x":5}' },
+      { kind: "tool_use_stop", index: 1 },
+      { kind: "message_stop", stopReason: "tool_use" }
+    ];
+    const resp = await normalizedEventsToFinalResponse(fromArray(events), META);
+    expect(resp.content).toEqual([
+      { type: "text", text: "computing now: " },
+      { type: "tool_use", id: "toolu_1", name: "calc", input: { x: 5 } }
+    ]);
+  });
+
+  it("falls back to raw string input if accumulated JSON is unparseable", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "tool_use_start", index: 0, id: "toolu_1", name: "calc" },
+      { kind: "tool_use_delta", index: 0, partialJson: "this is not json" },
+      { kind: "tool_use_stop", index: 0 },
+      { kind: "message_stop", stopReason: "tool_use" }
+    ];
+    const resp = await normalizedEventsToFinalResponse(fromArray(events), META);
+    // The aggregator preserves the raw partial JSON as a string under input
+    // when JSON.parse fails — this is a best-effort recovery so a malformed
+    // upstream doesn't surface as a 500.
+    expect(resp.content[0]).toEqual({
+      type: "tool_use",
+      id: "toolu_1",
+      name: "calc",
+      input: "this is not json"
+    });
+  });
+
+  it("maps stop_reason 'stop_sequence' to the response body", async () => {
+    const events: NormalizedEvent[] = [
+      { kind: "message_start", model: "claude-sonnet-4-6" },
+      { kind: "text_delta", index: 0, text: "partial" },
+      { kind: "message_stop", stopReason: "stop_sequence" }
+    ];
+    const resp = await normalizedEventsToFinalResponse(fromArray(events), META);
+    expect(resp.stop_reason).toBe("stop_sequence");
+  });
+});

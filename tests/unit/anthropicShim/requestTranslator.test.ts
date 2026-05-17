@@ -171,102 +171,6 @@ describe("anthropicRequestToNormalized — Plan 03 scope rejections", () => {
     expect((caught as ShimRequestError).message).toMatch(pattern);
   }
 
-  it("rejects image content blocks", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "describe" },
-              { type: "image", source: { type: "base64", media_type: "image/png", data: "X" } }
-            ]
-          }
-        ]
-      },
-      /image|multimodal/i
-    );
-  });
-
-  it("rejects document content blocks", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: "X" } }]
-          }
-        ]
-      },
-      /document|multimodal/i
-    );
-  });
-
-  it("rejects tool_use content blocks in the request", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "tool_use", id: "t1", name: "calc", input: {} }]
-          }
-        ]
-      },
-      /tool/i
-    );
-  });
-
-  it("rejects tool_result content blocks in the request", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }]
-          }
-        ]
-      },
-      /tool/i
-    );
-  });
-
-  it("rejects non-empty tools field", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [{ role: "user", content: "hi" }],
-        tools: [{ name: "calc", input_schema: {} }]
-      },
-      /tool/i
-    );
-  });
-
-  it("rejects tool_choice field when present", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [{ role: "user", content: "hi" }],
-        tool_choice: { type: "auto" }
-      },
-      /tool_choice/i
-    );
-  });
-
-  it("rejects non-empty stop_sequences", () => {
-    assertRejected(
-      {
-        model: "claude-sonnet-4-6",
-        messages: [{ role: "user", content: "hi" }],
-        stop_sequences: ["STOP"]
-      },
-      /stop_sequences/i
-    );
-  });
-
   it("rejects thinking field", () => {
     assertRejected(
       {
@@ -315,5 +219,197 @@ describe("anthropicRequestToNormalized — Plan 03 scope rejections", () => {
       tools: []
     });
     expect(out.tools).toBeUndefined();
+  });
+});
+
+describe("anthropicRequestToNormalized — Plan 04 passthroughs", () => {
+  it("translates an image content block with base64 source", () => {
+    const out = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe" },
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: "AAAAAA" }
+            }
+          ]
+        }
+      ]
+    });
+    expect(out.messages[0]?.content).toEqual([
+      { type: "text", text: "describe" },
+      { type: "image", mediaType: "image/png", data: "AAAAAA" }
+    ]);
+  });
+
+  it("translates a document content block with base64 source", () => {
+    const out = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "document",
+              source: { type: "base64", media_type: "application/pdf", data: "JVBERi0=" }
+            }
+          ]
+        }
+      ]
+    });
+    expect(out.messages[0]?.content).toEqual([
+      { type: "document", mediaType: "application/pdf", data: "JVBERi0=" }
+    ]);
+  });
+
+  it("rejects image source.type 'url' (lands in Plan 05 — fetch + inline)", () => {
+    expect(() =>
+      anthropicRequestToNormalized({
+        model: "claude-sonnet-4-6",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image", source: { type: "url", url: "https://example.com/x.png" } }]
+          }
+        ]
+      })
+    ).toThrow(/url|source/i);
+  });
+
+  it("rejects image source.type 'file' (file_<hash> resolution lands in Plan 05)", () => {
+    expect(() =>
+      anthropicRequestToNormalized({
+        model: "claude-sonnet-4-6",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "image", source: { type: "file", file_id: "file_abc" } }]
+          }
+        ]
+      })
+    ).toThrow(/file|source/i);
+  });
+
+  it("translates a tool_use content block in an assistant message", () => {
+    const out = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [
+        { role: "user", content: "compute" },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_1", name: "calc", input: { x: 1, y: 2 } }
+          ]
+        }
+      ]
+    });
+    expect(out.messages[1]?.content).toEqual([
+      { type: "tool_use", id: "toolu_1", name: "calc", input: { x: 1, y: 2 } }
+    ]);
+  });
+
+  it("translates a tool_result with string content shorthand", () => {
+    const out = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "3" }]
+        }
+      ]
+    });
+    expect(out.messages[0]?.content).toEqual([
+      { type: "tool_result", toolUseId: "toolu_1", content: "3" }
+    ]);
+  });
+
+  it("translates a tool_result with content-block array (joins text)", () => {
+    const out = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [
+                { type: "text", text: "result" },
+                { type: "text", text: ": 3" }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+    expect(out.messages[0]?.content).toEqual([
+      { type: "tool_result", toolUseId: "toolu_1", content: "result\n: 3" }
+    ]);
+  });
+
+  it("translates the tools array", () => {
+    const out = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          name: "calculator",
+          description: "Adds two numbers",
+          input_schema: {
+            type: "object",
+            properties: { x: { type: "number" }, y: { type: "number" } }
+          }
+        }
+      ]
+    });
+    expect(out.tools).toEqual([
+      {
+        name: "calculator",
+        description: "Adds two numbers",
+        inputSchema: {
+          type: "object",
+          properties: { x: { type: "number" }, y: { type: "number" } }
+        }
+      }
+    ]);
+  });
+
+  it("translates tool_choice 'auto' / 'any' / 'none' / named", () => {
+    const auto = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: { type: "auto" }
+    });
+    expect(auto.toolChoice).toBe("auto");
+    const any = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: { type: "any" }
+    });
+    expect(any.toolChoice).toBe("any");
+    const none = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: { type: "none" }
+    });
+    expect(none.toolChoice).toBe("none");
+    const named = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      tool_choice: { type: "tool", name: "calc" }
+    });
+    expect(named.toolChoice).toEqual({ type: "tool", name: "calc" });
+  });
+
+  it("translates stop_sequences", () => {
+    const out = anthropicRequestToNormalized({
+      model: "claude-sonnet-4-6",
+      messages: [{ role: "user", content: "hi" }],
+      stop_sequences: ["STOP", "END"]
+    });
+    expect(out.stopSequences).toEqual(["STOP", "END"]);
   });
 });

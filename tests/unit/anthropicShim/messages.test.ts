@@ -144,7 +144,7 @@ describe("POST /v1/messages — request validation", () => {
     });
   });
 
-  it("returns 400 on image content blocks (Plan 03 scope)", async () => {
+  it("accepts image content blocks (Plan 04 scope: passthrough to backend)", async () => {
     const app = buildApp({ apiKey: "sk-test", backend: stubClaude({}) });
     const res = await request(app)
       .post("/v1/messages")
@@ -161,11 +161,10 @@ describe("POST /v1/messages — request validation", () => {
           }
         ]
       });
-    expect(res.status).toBe(400);
-    expect(res.body.error.message).toMatch(/image|multimodal/i);
+    expect(res.status).toBe(200);
   });
 
-  it("returns 400 on non-empty tools array (Plan 03 scope)", async () => {
+  it("accepts non-empty tools array (Plan 04 scope: passthrough to backend)", async () => {
     const app = buildApp({ apiKey: "sk-test", backend: stubClaude({}) });
     const res = await request(app)
       .post("/v1/messages")
@@ -175,11 +174,10 @@ describe("POST /v1/messages — request validation", () => {
         messages: [{ role: "user", content: "hi" }],
         tools: [{ name: "calc", input_schema: {} }]
       });
-    expect(res.status).toBe(400);
-    expect(res.body.error.message).toMatch(/tool/i);
+    expect(res.status).toBe(200);
   });
 
-  it("returns 400 on non-empty stop_sequences (Plan 03 scope)", async () => {
+  it("accepts non-empty stop_sequences (Plan 04 scope: passthrough to backend)", async () => {
     const app = buildApp({ apiKey: "sk-test", backend: stubClaude({}) });
     const res = await request(app)
       .post("/v1/messages")
@@ -189,8 +187,7 @@ describe("POST /v1/messages — request validation", () => {
         messages: [{ role: "user", content: "hi" }],
         stop_sequences: ["STOP"]
       });
-    expect(res.status).toBe(400);
-    expect(res.body.error.message).toMatch(/stop_sequences/i);
+    expect(res.status).toBe(200);
   });
 });
 
