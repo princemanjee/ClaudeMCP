@@ -136,9 +136,93 @@ export class OllamaBackend implements Backend {
     };
   }
 
-  // listModels real implementation lands in Task 6.
   async listModels(): Promise<ModelDescriptor[]> {
-    return [];
+    // Probe every instance in parallel; tolerate failures per-instance.
+    const probed = await Promise.all(
+      this.instances.map(async (r) => {
+        try {
+          const models =
+            r.mode === "native"
+              ? await this.probeNativeTags(r)
+              : await this.probeCompatModels(r);
+          return { instance: r, models };
+        } catch (err) {
+          // Log and contribute no models from this instance. Production code
+          // should plug a structured logger here; Plan 09 stays minimal.
+          // eslint-disable-next-line no-console
+          console.warn(
+            `OllamaBackend: instance ${r.name} probe failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+          return { instance: r, models: [] as ModelDescriptor[] };
+        }
+      })
+    );
+
+    // Sort by descending priority so the first occurrence of each model id
+    // wins the dedup pass.
+    probed.sort((a, b) => b.instance.priority - a.instance.priority);
+
+    const seen = new Set<string>();
+    const out: ModelDescriptor[] = [];
+    for (const p of probed) {
+      for (const m of p.models) {
+        if (!seen.has(m.id)) {
+          seen.add(m.id);
+          out.push(m);
+        }
+      }
+    }
+    return out;
+  }
+
+  private async probeNativeTags(r: ResolvedInstance): Promise<ModelDescriptor[]> {
+    if (!r.nativeClient) {
+      throw new Error(`OllamaBackend.probeNativeTags: no nativeClient for ${r.name}`);
+    }
+    const raw = (await r.nativeClient.listTags()) as {
+      models?: Array<{
+        name: string;
+        details?: { family?: string; parameter_size?: string; quantization_level?: string };
+      }>;
+    };
+    return (raw.models ?? []).map((m) => ({
+      id: m.name,
+      supportsTools: true,    // conservative; backend says yes, model may not honor at runtime
+      supportsVision: true,   // ditto
+      description: this.formatTagDescription(m)
+    }));
+  }
+
+  private formatTagDescription(m: {
+    details?: { family?: string; parameter_size?: string; quantization_level?: string };
+  }): string {
+    const bits: string[] = [];
+    if (m.details?.family) bits.push(m.details.family);
+    if (m.details?.parameter_size) bits.push(m.details.parameter_size);
+    if (m.details?.quantization_level) bits.push(m.details.quantization_level);
+    return bits.length > 0 ? bits.join(" · ") : "ollama model";
+  }
+
+  private async probeCompatModels(r: ResolvedInstance): Promise<ModelDescriptor[]> {
+    if (!r.compatClient) {
+      throw new Error(`OllamaBackend.probeCompatModels: no compatClient for ${r.name}`);
+    }
+    // openaiCompatClient.listModels returns raw entries (Plan 08's shipped
+    // surface — different from Plan 09's docs which assumed ModelDescriptor[]).
+    // We map id-by-id here to the normalized descriptor shape.
+    const raw = await r.compatClient.listModels();
+    const out: ModelDescriptor[] = [];
+    for (const entry of raw) {
+      const id = (entry as { id?: unknown }).id;
+      if (typeof id === "string" && id.length > 0) {
+        out.push({
+          id,
+          supportsTools: true,
+          supportsVision: true
+        });
+      }
+    }
+    return out;
   }
 
   // eslint-disable-next-line require-yield

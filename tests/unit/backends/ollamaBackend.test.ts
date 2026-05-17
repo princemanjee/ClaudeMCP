@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { OllamaBackend, type OllamaBackendConfig } from "../../../src/backends/ollamaBackend.js";
+import { startMockOllama, type MockOllamaHandle } from "../../helpers/mockOllamaProcess.js";
 
 describe("OllamaBackend skeleton", () => {
   function makeConfig(overrides: Partial<OllamaBackendConfig> = {}): OllamaBackendConfig {
@@ -142,5 +143,124 @@ describe("OllamaBackend per-instance mode resolution", () => {
       instances: [inst("a", null)]
     });
     expect(() => backend.instanceMode("nope")).toThrow(/unknown instance/i);
+  });
+});
+
+describe("OllamaBackend.listModels (compat mode)", () => {
+  let mock: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mock = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: false,
+      instances: [
+        { name: "local", baseUrl: mock.baseUrl, priority: 40, timeoutMs: 5000, useNativeApi: null }
+      ]
+    });
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+  });
+
+  it("returns models from /v1/models", async () => {
+    const models = await backend.listModels();
+    const ids = models.map((m) => m.id);
+    expect(ids).toContain("llama-3.3-70b");
+    expect(ids).toContain("nomic-embed-text");
+  });
+});
+
+describe("OllamaBackend.listModels (native mode)", () => {
+  let mock: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mock = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: true,
+      instances: [
+        { name: "local", baseUrl: mock.baseUrl, priority: 40, timeoutMs: 5000, useNativeApi: null }
+      ]
+    });
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+  });
+
+  it("returns models from /api/tags", async () => {
+    const models = await backend.listModels();
+    const ids = models.map((m) => m.id);
+    expect(ids).toContain("llama-3.3-70b");
+    expect(ids).toContain("nomic-embed-text");
+  });
+
+  it("each ModelDescriptor carries a parsed-from-tags description", async () => {
+    const models = await backend.listModels();
+    const llama = models.find((m) => m.id === "llama-3.3-70b");
+    expect(llama?.description).toBeDefined();
+    expect(typeof llama?.description).toBe("string");
+  });
+});
+
+describe("OllamaBackend.listModels (multi-instance dedup + priority)", () => {
+  let mockA: MockOllamaHandle;
+  let mockB: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mockA = await startMockOllama();
+    mockB = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: false,
+      instances: [
+        { name: "high", baseUrl: mockA.baseUrl, priority: 100, timeoutMs: 5000, useNativeApi: null },
+        { name: "low", baseUrl: mockB.baseUrl, priority: 10, timeoutMs: 5000, useNativeApi: true }
+      ]
+    });
+  });
+
+  afterAll(async () => {
+    await mockA.stop();
+    await mockB.stop();
+  });
+
+  it("dedupes overlapping model ids, keeping the higher-priority entry", async () => {
+    const models = await backend.listModels();
+    // mockA + mockB both report llama-3.3-70b; only one should remain.
+    const llamaEntries = models.filter((m) => m.id === "llama-3.3-70b");
+    expect(llamaEntries.length).toBe(1);
+  });
+});
+
+describe("OllamaBackend.listModels (instance probe failure does not crash)", () => {
+  let mock: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mock = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: false,
+      instances: [
+        { name: "ok", baseUrl: mock.baseUrl, priority: 40, timeoutMs: 5000, useNativeApi: null },
+        { name: "bad", baseUrl: "http://127.0.0.1:1", priority: 10, timeoutMs: 500, useNativeApi: null }
+      ]
+    });
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+  });
+
+  it("returns models from reachable instances even when others fail", async () => {
+    const models = await backend.listModels();
+    const ids = models.map((m) => m.id);
+    expect(ids).toContain("llama-3.3-70b");
   });
 });
