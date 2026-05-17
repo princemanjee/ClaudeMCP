@@ -60,7 +60,7 @@ async function startServer(): Promise<Spawned> {
       cache: { file: join(workDir, "cache.json"), ttlMs: 60000, maxEntries: 100 }
     })
   );
-  const port = 13510 + Math.floor(Math.random() * 200);
+  const port = 14010 + Math.floor(Math.random() * 200);
   const proc = spawn(
     process.execPath,
     [
