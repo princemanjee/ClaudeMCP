@@ -540,3 +540,73 @@ describe("OllamaBackend.invoke (native mode)", () => {
     expect(messages[2]?.content).toBe("ok");
   });
 });
+
+describe("OllamaBackend.embed (compat mode)", () => {
+  let mock: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mock = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: false,
+      instances: [
+        { name: "local", baseUrl: mock.baseUrl, priority: 40, timeoutMs: 5000, useNativeApi: null }
+      ]
+    });
+    await backend.listModels();
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+  });
+
+  it("round-trips a single-input embed", async () => {
+    const resp = await backend.embed!({
+      model: "nomic-embed-text",
+      input: ["hello"]
+    });
+    expect(resp.embeddings.length).toBe(1);
+    expect(resp.embeddings[0]?.length).toBeGreaterThan(0);
+    expect(resp.model).toBe("nomic-embed-text");
+  });
+
+  it("round-trips multiple inputs", async () => {
+    const resp = await backend.embed!({
+      model: "nomic-embed-text",
+      input: ["hello", "world", "again"]
+    });
+    expect(resp.embeddings.length).toBe(3);
+  });
+});
+
+describe("OllamaBackend.embed (native mode)", () => {
+  let mock: MockOllamaHandle;
+  let backend: OllamaBackend;
+
+  beforeAll(async () => {
+    mock = await startMockOllama();
+    backend = new OllamaBackend({
+      enabled: true,
+      useNativeApi: true,
+      instances: [
+        { name: "local", baseUrl: mock.baseUrl, priority: 40, timeoutMs: 5000, useNativeApi: null }
+      ]
+    });
+    await backend.listModels();
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+  });
+
+  it("hits /api/embed and returns NormalizedEmbeddingResponse", async () => {
+    const resp = await backend.embed!({
+      model: "nomic-embed-text",
+      input: ["hello"]
+    });
+    expect(resp.embeddings.length).toBe(1);
+    expect(resp.embeddings[0]?.length).toBe(8);
+    expect(resp.model).toBe("nomic-embed-text");
+  });
+});

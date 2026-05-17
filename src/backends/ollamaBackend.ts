@@ -572,9 +572,53 @@ export class OllamaBackend implements Backend {
   }
 
   async embed(
-    _req: NormalizedEmbeddingRequest
+    req: NormalizedEmbeddingRequest
   ): Promise<NormalizedEmbeddingResponse> {
-    throw new Error("OllamaBackend.embed() lands in Plan 09 Task 9");
+    const instance = this.selectInstance(req.model);
+
+    if (instance.mode === "compat") {
+      if (!instance.compatClient) {
+        throw new Error(
+          `OllamaBackend.embed: instance ${instance.name} has no compatClient`
+        );
+      }
+      // openaiCompatClient.embeddings returns raw OpenAI shape (Plan 08's
+      // shipped surface). Translate to NormalizedEmbeddingResponse here.
+      const raw = (await instance.compatClient.embeddings({
+        model: req.model,
+        input: req.input
+      })) as {
+        model?: string;
+        data?: Array<{ embedding?: number[]; index?: number }>;
+      };
+      const items = [...(raw.data ?? [])].sort(
+        (a, b) => (a.index ?? 0) - (b.index ?? 0)
+      );
+      return {
+        model: raw.model ?? req.model,
+        embeddings: items.map((d) => d.embedding ?? [])
+      };
+    }
+
+    if (!instance.nativeClient) {
+      throw new Error(
+        `OllamaBackend.embed: instance ${instance.name} has no nativeClient`
+      );
+    }
+    const raw = (await instance.nativeClient.embed({
+      model: req.model,
+      input: req.input
+    })) as { embeddings?: number[][]; model?: string };
+
+    if (!Array.isArray(raw.embeddings)) {
+      throw new Error(
+        `OllamaBackend.embed: native client returned no embeddings array`
+      );
+    }
+    return {
+      model: raw.model ?? req.model,
+      embeddings: raw.embeddings
+    };
   }
 
   async countTokens(req: NormalizedRequest): Promise<number> {
