@@ -6,6 +6,7 @@ import type { BackendRegistry } from "../backends/registry.js";
 import type { Backend, BackendId } from "../backends/types.js";
 import { identifyBackend } from "../modelRouter.js";
 import { recordCompletion } from "../admin/recordCompletion.js";
+import { estimateTokens } from "../tokenEstimator.js";
 import {
   authenticationError,
   internalServerError,
@@ -183,10 +184,19 @@ export function createEmbeddingsHandler(deps: EmbeddingsDeps): RequestHandler {
         embedding: encodingFormat === "base64" ? encodeFloat32Base64(emb) : emb,
         index
       }));
+      // Real OpenAI service always populates `usage` on embeddings; some SDK
+      // versions tighten this from optional to required. Approximate via the
+      // existing char/4 token estimator. Embeddings have no completion tokens
+      // so `total_tokens` == `prompt_tokens`.
+      const promptTokens = input.reduce(
+        (sum, s) => sum + estimateTokens(s),
+        0
+      );
       const respBody: OpenAIEmbeddingsResponse = {
         object: "list",
         data,
-        model: result.model
+        model: result.model,
+        usage: { prompt_tokens: promptTokens, total_tokens: promptTokens }
       };
       archivedBody = respBody;
       res.status(200).json(respBody);

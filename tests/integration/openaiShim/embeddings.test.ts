@@ -288,6 +288,21 @@ describe.skipIf(!HAS_LMSTUDIO)(
       );
       expect(entry, "expected archive entry for /v1/embeddings").toBeDefined();
     });
+
+    it("response includes usage.prompt_tokens (real OpenAI parity)", async () => {
+      const res = await postEmbed(server!.port, {
+        model: "nomic-embed-text",
+        input: "the quick brown fox jumps over the lazy dog"
+      });
+      expect(res.status).toBe(200);
+      const body = res.json as {
+        usage?: { prompt_tokens?: unknown; total_tokens?: unknown };
+      };
+      expect(body.usage).toBeDefined();
+      expect(typeof body.usage?.prompt_tokens).toBe("number");
+      expect(body.usage?.prompt_tokens).toBeGreaterThan(0);
+      expect(body.usage?.total_tokens).toBe(body.usage?.prompt_tokens);
+    });
   }
 );
 
