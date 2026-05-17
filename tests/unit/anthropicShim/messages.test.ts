@@ -1,14 +1,58 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import express from "express";
 import request from "supertest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { BackendRegistry } from "../../../src/backends/registry.js";
 import { createMessagesHandler } from "../../../src/anthropicShim/messages.js";
+import { Archive } from "../../../src/archive.js";
+import { ResponseCache } from "../../../src/responseCache.js";
 import type {
   Backend,
   BackendCapabilities,
   NormalizedEvent,
   NormalizedRequest
 } from "../../../src/backends/types.js";
+
+interface TestHarness {
+  archive: Archive;
+  cache: ResponseCache;
+  cleanup: () => void;
+}
+
+const liveHarnesses: TestHarness[] = [];
+
+function makeHarness(): TestHarness {
+  const dir = mkdtempSync(join(tmpdir(), "claudemcp-msg-h-"));
+  const archive = new Archive(join(dir, "archive.sqlite"));
+  const cache = new ResponseCache({
+    file: join(dir, "cache.json"),
+    ttlMs: 60_000,
+    maxEntries: 100
+  });
+  const h: TestHarness = {
+    archive,
+    cache,
+    cleanup: () => {
+      try {
+        archive.close();
+      } catch {
+        // ignore double-close
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  liveHarnesses.push(h);
+  return h;
+}
+
+afterEach(() => {
+  while (liveHarnesses.length > 0) {
+    const h = liveHarnesses.pop();
+    h?.cleanup();
+  }
+});
 
 interface Recorded {
   request?: NormalizedRequest;
@@ -54,7 +98,9 @@ function buildApp(opts: {
   apiKey: string;
   backend: Backend;
   defaultBackend?: "claude" | "gemini" | "lmstudio" | "ollama";
+  harness?: TestHarness;
 }): express.Express {
+  const harness = opts.harness ?? makeHarness();
   const registry = new BackendRegistry({
     claude: 100,
     gemini: 90,
@@ -68,6 +114,8 @@ function buildApp(opts: {
     "/v1/messages",
     createMessagesHandler({
       registry,
+      archive: harness.archive,
+      responseCache: harness.cache,
       config: {
         apiKey: opts.apiKey,
         router: { defaultBackend: opts.defaultBackend ?? "claude" }
@@ -340,5 +388,127 @@ describe("POST /v1/messages — backend errors", () => {
       type: "error",
       error: { type: "api_error", message: expect.stringContaining("backend boom") }
     });
+  });
+});
+
+async function flushFireAndForget(): Promise<void> {
+  // Give the setImmediate-scheduled archive write multiple ticks to complete.
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setTimeout(r, 10));
+}
+
+describe("POST /v1/messages — response cache", () => {
+  it("on hit, skips backend invocation and returns cached body", async () => {
+    let invocations = 0;
+    const base = stubClaude({
+      events: [
+        { kind: "message_start", model: "claude-sonnet-4-6" },
+        { kind: "text_delta", index: 0, text: "first-call" },
+        {
+          kind: "message_stop",
+          stopReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 }
+        }
+      ]
+    });
+    const wrapped: Backend = {
+      ...base,
+      invoke: async function* (req: NormalizedRequest) {
+        invocations++;
+        for await (const ev of base.invoke(req)) yield ev;
+      }
+    };
+    const app = buildApp({ apiKey: "sk-test", backend: wrapped });
+
+    const body = {
+      model: "claude-sonnet-4-6",
+      messages: [
+        {
+          role: "user" as const,
+          content: [
+            {
+              type: "text" as const,
+              text: "cache me",
+              cache_control: { type: "ephemeral" }
+            }
+          ]
+        }
+      ]
+    };
+
+    const first = await request(app)
+      .post("/v1/messages")
+      .set("x-api-key", "sk-test")
+      .send(body);
+    expect(first.status).toBe(200);
+    await flushFireAndForget();
+
+    const second = await request(app)
+      .post("/v1/messages")
+      .set("x-api-key", "sk-test")
+      .send(body);
+    expect(second.status).toBe(200);
+
+    expect(invocations).toBe(1); // Second call hit the cache.
+    expect(second.body.content).toEqual([{ type: "text", text: "first-call" }]);
+  });
+});
+
+describe("POST /v1/messages — archive write", () => {
+  it("writes an entry per request, including the resolved backend tag", async () => {
+    const harness = makeHarness();
+    const app = buildApp({ apiKey: "sk-test", backend: stubClaude({}), harness });
+
+    const res = await request(app)
+      .post("/v1/messages")
+      .set("x-api-key", "sk-test")
+      .send({
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "log me" }]
+      });
+    expect(res.status).toBe(200);
+    await flushFireAndForget();
+
+    const page = harness.archive.list({ limit: 10, offset: 0 });
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0]?.backend).toBe("claude");
+    expect(page.data[0]?.endpoint).toBe("/v1/messages");
+  });
+
+  it("archives error entries when the backend throws", async () => {
+    const failing: Backend = {
+      id: "claude",
+      capabilitiesFor: () => ({
+        toolUse: false,
+        multimodal: false,
+        thinking: false,
+        cacheControl: "none",
+        samplingParams: { temperature: false, topP: false, topK: false },
+        stopSequences: "server-side-cut",
+        embeddings: false
+      }),
+      listModels: async () => [{ id: "claude-sonnet-4-6" }],
+      invoke: async function* (): AsyncIterable<NormalizedEvent> {
+        throw new Error("backend boom");
+      },
+      countTokens: async () => 0
+    };
+    const harness = makeHarness();
+    const app = buildApp({ apiKey: "sk-test", backend: failing, harness });
+
+    const res = await request(app)
+      .post("/v1/messages")
+      .set("x-api-key", "sk-test")
+      .send({
+        model: "claude-sonnet-4-6",
+        messages: [{ role: "user", content: "fail me" }]
+      });
+    expect(res.status).toBe(500);
+    await flushFireAndForget();
+
+    const page = harness.archive.list({ limit: 10, offset: 0 });
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0]?.status).toBe("error");
   });
 });
