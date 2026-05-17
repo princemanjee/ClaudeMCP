@@ -124,7 +124,100 @@
               </template>
             </div>
           </section>
-          <section x-show="activePanel === 'backends'"  x-data="backendsPanel()"    x-init="init()"></section>
+          <section x-show="activePanel === 'backends'" x-data="backendsPanel()" x-init="init()" x-destroy="destroy()">
+            <template x-if="loading"><p class="muted">Loading config…</p></template>
+            <template x-if="error"><p class="error" x-text="error"></p></template>
+
+            <template x-if="!loading && draft">
+              <div class="backends-grid">
+
+                <!-- Single-instance CLI backends -->
+                <template x-for="bid in ['claude', 'gemini']" :key="bid">
+                  <article class="glass-card backend-block">
+                    <header class="backend-header">
+                      <h2 x-text="bid"></h2>
+                      <label class="toggle"><input type="checkbox" x-model="draft[bid].enabled"> enabled</label>
+                    </header>
+                    <div class="form-grid">
+                      <label>Command<input type="text" x-model="draft[bid].command"></label>
+                      <label>Priority<input type="number" x-model.number="draft[bid].priority"></label>
+                      <label>Timeout (ms)<input type="number" x-model.number="draft[bid].timeoutMs"></label>
+                    </div>
+                  </article>
+                </template>
+
+                <!-- Multi-instance HTTP backends -->
+                <template x-for="bid in ['lmstudio', 'ollama']" :key="bid">
+                  <article class="glass-card backend-block">
+                    <header class="backend-header">
+                      <h2 x-text="bid"></h2>
+                      <label class="toggle"><input type="checkbox" x-model="draft[bid].enabled"> enabled</label>
+                      <template x-if="bid === 'ollama'">
+                        <label class="toggle">
+                          <input type="checkbox" x-model="draft[bid].useNativeApi"> useNativeApi (backend default)
+                        </label>
+                      </template>
+                      <button type="button" class="ghost" @click="addInstance(bid)">
+                        <span x-html="ICONS.plus"></span> Add instance
+                      </button>
+                    </header>
+
+                    <template x-for="(inst, idx) in draft[bid].instances" :key="bid + ':' + idx">
+                      <div class="instance-card glass-card">
+                        <div class="form-grid">
+                          <label>Name<input type="text" x-model="inst.name"></label>
+                          <label>Base URL<input type="text" x-model="inst.baseUrl"></label>
+                          <label>
+                            API Key
+                            <div class="input-with-toggle">
+                              <input :type="showApiKey[bid+'/'+inst.name] ? 'text' : 'password'" x-model="inst.apiKey">
+                              <button type="button" class="ghost" @click="showApiKey[bid+'/'+inst.name] = !showApiKey[bid+'/'+inst.name]" x-text="showApiKey[bid+'/'+inst.name] ? 'Hide' : 'Show'"></button>
+                            </div>
+                          </label>
+                          <label>Priority<input type="number" x-model.number="inst.priority"></label>
+                          <label>Timeout (ms)<input type="number" x-model.number="inst.timeoutMs"></label>
+                          <template x-if="bid === 'ollama'">
+                            <label>useNativeApi
+                              <select x-model="inst.useNativeApi">
+                                <option :value="null">inherit</option>
+                                <option :value="true">true</option>
+                                <option :value="false">false</option>
+                              </select>
+                            </label>
+                          </template>
+                        </div>
+
+                        <div class="instance-actions">
+                          <button type="button" class="ghost" @click="testConnection(bid, inst)">Test connection</button>
+                          <span class="test-result" :class="testing[bid+'/'+inst.name] ? testing[bid+'/'+inst.name].status : ''" x-text="testing[bid+'/'+inst.name] ? testing[bid+'/'+inst.name].message : ''"></span>
+                          <button type="button" class="danger" @click="removeInstance(bid, idx)">
+                            <span x-html="ICONS.trash"></span> Remove
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+
+                    <details>
+                      <summary>Discovered models (<span x-text="modelsForBackend(bid).length"></span>)</summary>
+                      <ul class="model-list">
+                        <template x-for="m in modelsForBackend(bid)" :key="m.id || m">
+                          <li x-text="m.id || m"></li>
+                        </template>
+                      </ul>
+                    </details>
+                  </article>
+                </template>
+
+                <footer class="save-bar glass-card" x-show="isDirty()">
+                  <button type="button" class="ghost" @click="reprobe()">
+                    <span x-html="ICONS.refresh"></span> Reprobe all
+                  </button>
+                  <button type="button" class="ghost" @click="discard()">Discard</button>
+                  <button type="button" class="primary" @click="save()">Save changes</button>
+                </footer>
+              </div>
+            </template>
+          </section>
           <section x-show="activePanel === 'router'"    x-data="routerPanel()"      x-init="init()"></section>
           <section x-show="activePanel === 'general'"   x-data="generalPanel()"     x-init="init()"></section>
           <section x-show="activePanel === 'archive'"   x-data="archivePanel()"     x-init="init()"></section>

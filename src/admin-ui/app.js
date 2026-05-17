@@ -297,7 +297,148 @@ function dashboardPanel() {
     },
   };
 }
-function backendsPanel()  { return { init() { /* see Task 11 */ } }; }
+function backendsPanel() {
+  return {
+    loading: true,
+    error: null,
+    config: null,          // current server config (apiKey redacted)
+    draft: null,           // editable copy
+    backendsLive: null,    // /admin/backends snapshot { data: [...] }
+    unsubscribe: null,
+    testing: {},           // map instanceKey -> {status, message}
+    showApiKey: {},
+
+    async init() {
+      await this.reload();
+      this.unsubscribe = subscribeBackends(state => { this.backendsLive = state.data; });
+    },
+    destroy() { if (this.unsubscribe) this.unsubscribe(); },
+
+    async reload() {
+      this.loading = true;
+      this.error = null;
+      try {
+        const res = await adminFetch("/admin/config");
+        if (!res.ok) throw new Error(`/admin/config ${res.status}`);
+        this.config = await res.json();
+        this.draft = JSON.parse(JSON.stringify(this.config));
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    addInstance(backendId) {
+      const block = this.draft[backendId];
+      if (!Array.isArray(block.instances)) block.instances = [];
+      const used = new Set(block.instances.map(x => x.name));
+      let i = 1;
+      while (used.has(`instance-${i}`)) i++;
+      block.instances.push({
+        name: `instance-${i}`,
+        baseUrl: backendId === "lmstudio" ? "http://localhost:1234" : "http://localhost:11434",
+        apiKey: "",
+        priority: 100,
+        timeoutMs: 60000,
+        useNativeApi: backendId === "ollama" ? null : null,
+      });
+    },
+
+    removeInstance(backendId, idx) {
+      this.draft[backendId].instances.splice(idx, 1);
+    },
+
+    async testConnection(backendId, instance) {
+      const key = `${backendId}/${instance.name}`;
+      this.testing[key] = { status: "pending", message: "Testing…" };
+      try {
+        // Real /admin/backends/test body: { baseUrl, apiKey?, useNativeApi? }
+        const body = { baseUrl: instance.baseUrl };
+        if (instance.apiKey) body.apiKey = instance.apiKey;
+        if (instance.useNativeApi !== null && instance.useNativeApi !== undefined) {
+          body.useNativeApi = instance.useNativeApi;
+        }
+        const res = await adminFetch("/admin/backends/test", {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (res.ok && out.ok) {
+          const n = Array.isArray(out.models) ? out.models.length : 0;
+          this.testing[key] = { status: "ok", message: `OK — ${n} models in ${out.latencyMs ?? "?"}ms` };
+        } else {
+          this.testing[key] = { status: "fail", message: out.error || `HTTP ${res.status}` };
+        }
+      } catch (e) {
+        this.testing[key] = { status: "fail", message: e instanceof Error ? e.message : String(e) };
+      }
+    },
+
+    async reprobe() {
+      try {
+        await adminFetch("/admin/backends/reprobe", { method: "POST" });
+        await refreshBackends();
+      } catch (_e) { /* shown via shared error state */ }
+    },
+
+    async save() {
+      try {
+        const patch = computeConfigPatch(this.config, this.draft);
+        const res = await adminFetch("/admin/config", { method: "PATCH", body: JSON.stringify(patch) });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          this.error = (body.error && body.error.message) || `Save failed: HTTP ${res.status}`;
+          return;
+        }
+        await this.reload();
+        await this.reprobe();
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e);
+      }
+    },
+
+    discard() {
+      this.draft = JSON.parse(JSON.stringify(this.config));
+    },
+
+    /** Models discovered by the live registry, filtered to a backend id. */
+    modelsForBackend(backendId) {
+      if (!this.backendsLive || !Array.isArray(this.backendsLive.data)) return [];
+      const b = this.backendsLive.data.find(x => x.id === backendId);
+      return b && Array.isArray(b.models) ? b.models : [];
+    },
+
+    isDirty() {
+      return JSON.stringify(this.config) !== JSON.stringify(this.draft);
+    },
+  };
+}
+
+/**
+ * Compute a deep JSON-merge-patch from base→target. Used for PATCH /admin/config.
+ * Arrays are atomic (full replacement, like RFC 7396).
+ */
+function computeConfigPatch(base, target) {
+  if (typeof base !== "object" || base === null || Array.isArray(base) ||
+      typeof target !== "object" || target === null || Array.isArray(target)) {
+    return target;
+  }
+  const out = {};
+  const keys = new Set([...Object.keys(base), ...Object.keys(target)]);
+  for (const k of keys) {
+    if (!(k in target)) { out[k] = null; continue; }
+    if (!(k in base))   { out[k] = target[k]; continue; }
+    if (typeof target[k] === "object" && target[k] !== null && !Array.isArray(target[k]) &&
+        typeof base[k]   === "object" && base[k]   !== null && !Array.isArray(base[k])) {
+      const sub = computeConfigPatch(base[k], target[k]);
+      if (sub && Object.keys(sub).length > 0) out[k] = sub;
+    } else if (JSON.stringify(base[k]) !== JSON.stringify(target[k])) {
+      out[k] = target[k];
+    }
+  }
+  return out;
+}
 function routerPanel()    { return { init() { /* see Task 12 */ } }; }
 function generalPanel()   { return { init() { /* see Task 13 */ } }; }
 function archivePanel()   { return { init() { /* see Task 14 */ } }; }
