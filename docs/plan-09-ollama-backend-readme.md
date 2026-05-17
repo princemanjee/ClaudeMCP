@@ -115,6 +115,8 @@ Plan 10 extends `src/openaiShim/embeddings.ts` and the existing `/v1/chat/comple
 
 ## Deviations from this plan that landed during execution
 
+> **Summary for the controller:** the principal divergence is the shape of Plan 08's shipped `OpenAICompatClient`. Plan 09's docs assumed a high-level, pre-translated surface; the shipped class is a thin HTTP wrapper. All adaptations were absorbed inside `OllamaBackend.ts` — Plan 08's source was not touched. See the eight numbered items below.
+
 Plan 09's docs assumed an `OpenaiCompatClient` (lowercase-`ai`) with high-level methods `chat(req)`, `embed(req)`, `listModels()` that returned pre-translated `AsyncIterable<NormalizedEvent>` / `NormalizedEmbeddingResponse` / `ModelDescriptor[]`. The shipped Plan 08 `OpenAICompatClient` (uppercase `AI`) is a deliberately thin HTTP wrapper with `chatCompletions(body)`, `chatCompletionsBuffered(body)`, `embeddings(body)`, `listModels()` returning raw OpenAI shapes. The differences and their consequences for Plan 09:
 
 1. **Class name** — Plan 09 was written against `OpenaiCompatClient`; the shipped class is `OpenAICompatClient` (uppercase `AI`). All Plan 09 imports use the actual exported name.
