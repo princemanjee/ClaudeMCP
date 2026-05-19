@@ -1,5 +1,9 @@
 import spawn from "cross-spawn";
 import treeKill from "tree-kill";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { ClaudeStreamOptions } from "./types.js";
 
 // ---- Stop-sequence cutter -------------------------------------------------
@@ -76,9 +80,11 @@ export function createStopSequenceMatcher(
  */
 export function buildStreamArgs(opts: ClaudeStreamOptions): string[] {
   const args: string[] = [];
-  if (opts.systemPrompt !== undefined) {
-    args.push("--system-prompt", opts.systemPrompt);
-  }
+  // systemPrompt is handled in runClaudeStream via --system-prompt-file
+  // (writing to a temp file) so a long system prompt doesn't push the argv
+  // past Windows' 32KB CreateProcessW command-line limit. Trae and similar
+  // clients can send tens of KB of tool definitions that the OpenAI shim
+  // serializes into the system envelope.
   if (opts.resumeSessionId) {
     args.push("--resume", opts.resumeSessionId);
   }
@@ -116,7 +122,25 @@ function splitCommand(
 export async function* runClaudeStream(
   opts: ClaudeStreamOptions
 ): AsyncIterable<unknown> {
+  // Materialize a long systemPrompt to a temp file and pass --system-prompt-file
+  // to keep the command line under Windows' 32KB CreateProcessW limit.
+  let tempSysFile: string | undefined;
   const args = buildStreamArgs(opts);
+  if (opts.systemPrompt !== undefined) {
+    tempSysFile = join(
+      tmpdir(),
+      `claudemcp-sys-${randomBytes(16).toString("hex")}.txt`
+    );
+    writeFileSync(tempSysFile, opts.systemPrompt, "utf8");
+    args.unshift("--system-prompt-file", tempSysFile);
+  }
+  const cleanupTempFile = (): void => {
+    if (tempSysFile) {
+      try { unlinkSync(tempSysFile); } catch { /* best-effort */ }
+      tempSysFile = undefined;
+    }
+  };
+
   const [cmd, prefixArgs] = splitCommand(opts.claudeCommand);
   const child = spawn(cmd, [...prefixArgs, ...args], {
     cwd: opts.workDir,
@@ -210,6 +234,7 @@ export async function* runClaudeStream(
 
   child.on("error", () => {
     spawnErrored = true;
+    cleanupTempFile();
     wake();
   });
 
@@ -225,6 +250,7 @@ export async function* runClaudeStream(
       }
     }
     done = true;
+    cleanupTempFile();
     wake();
   });
 
