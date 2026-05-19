@@ -77,13 +77,17 @@ export function createStopSequenceMatcher(
 export function buildStreamArgs(opts: ClaudeStreamOptions): string[] {
   const args: string[] = [];
   if (opts.systemPrompt !== undefined) {
-    args.push("--system", opts.systemPrompt);
+    args.push("--system-prompt", opts.systemPrompt);
   }
   if (opts.resumeSessionId) {
     args.push("--resume", opts.resumeSessionId);
   }
   args.push("-p", opts.prompt);
   args.push("--output-format", "stream-json");
+  // Required: as of recent Claude Code releases, stream-json emits only
+  // hook/init system events unless --verbose is set. Without it the runner
+  // never sees assistant/result events and returns empty content.
+  args.push("--verbose");
   if (opts.tools && opts.tools.length > 0) {
     args.push("--tools", JSON.stringify(opts.tools));
   }
