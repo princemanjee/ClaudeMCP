@@ -1,15 +1,15 @@
 {
-  "apiKey": "CHANGE-ME-BEFORE-USE",
-  "claude": { "enabled": true, "command": "claude", "priority": 100, "timeoutMs": 600000 },
-  "gemini": { "enabled": true, "command": "gemini", "priority": 90, "timeoutMs": 600000 },
+  "apiKey": "aiorch-local-dev-key-2026",
+  "claude": { "enabled": true, "command": "C:/Users/princ/.local/bin/claude.exe", "priority": 100, "timeoutMs": 600000 },
+  "gemini": { "enabled": false, "command": "gemini", "priority": 90, "timeoutMs": 600000 },
   "lmstudio": {
-    "enabled": true,
+    "enabled": false,
     "instances": [
       { "name": "local", "baseUrl": "http://127.0.0.1:1234/v1", "apiKey": "", "priority": 50, "timeoutMs": 300000 }
     ]
   },
   "ollama": {
-    "enabled": true,
+    "enabled": false,
     "useNativeApi": false,
     "instances": [
       { "name": "local", "baseUrl": "http://127.0.0.1:11434", "priority": 40, "timeoutMs": 300000, "useNativeApi": null }
